@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-بوت الرسائل المجهولة – @sarr7neBot
-"""
 
 from __future__ import annotations
 import os
@@ -11,13 +8,15 @@ import logging
 from pathlib import Path
 from typing import Dict
 from datetime import datetime
+from flask import Flask
+import threading
 
 import telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
 
 # ─────────────── الإعدادات ───────────────
-BOT_TOKEN: str = "8681380387:AAHootnxpMHM7u_6dJrGYcFNym7H7wSXq5U"
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8681380387:AAHootnxpMHM7u_6dJrGYcFNym7H7wSXq5U")
 ADMIN_ID: int = 1053838533
 TARGET_CHANNEL_ID: int = -1003747214322
 CHANNEL_USERNAME: str = "AurelianMind03"
@@ -32,6 +31,21 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
 )
+
+# ─────────────── Flask Web Server ───────────────
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    return "✅ البوت شغّال!"
+
+@web_app.route("/health")
+def health():
+    return "OK", 200
+
+def run_web():
+    port = int(os.getenv("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
 # ─────────────── تحميل التفاعلات ───────────────
 if REACTION_FILE.exists():
@@ -148,7 +162,6 @@ def build_keyboard(chat_id: int, msg_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 def get_subscribe_keyboard() -> types.InlineKeyboardMarkup:
-    """كيبورد الاشتراك في القناة"""
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
@@ -181,7 +194,6 @@ def is_channel_member(user_id: int) -> bool:
 
 @bot.message_handler(commands=["start"])
 def cmd_start(m: types.Message) -> None:
-    # التحقّق من الاشتراك أول شي
     if not is_channel_member(m.from_user.id):
         bot.send_message(
             m.chat.id,
@@ -309,7 +321,6 @@ def cmd_search(m: types.Message) -> None:
 
 @bot.message_handler(func=lambda msg: msg.chat.type == "private", content_types=["text"])
 def private_handler(m: types.Message) -> None:
-    # التحقّق من الاشتراك
     if not is_channel_member(m.from_user.id):
         bot.reply_to(
             m,
@@ -321,17 +332,14 @@ def private_handler(m: types.Message) -> None:
         )
         return
 
-    # تسجيل + إشعار المالك
     log_entry = log_message(m.from_user, m.text)
     send_owner_notification(m.from_user, m.text, log_entry)
 
-    # توجيه الأصل للأدمن
     try:
         bot.forward_message(ADMIN_ID, m.chat.id, m.message_id)
     except Exception:
         logging.exception("تعذّر توجيه الرسالة للأدمن")
 
-    # نشر مجهول في القناة
     sent = bot.send_message(
         TARGET_CHANNEL_ID,
         f"📩 <b>رسالة مجهولة:</b>\n{m.text}",
@@ -339,7 +347,6 @@ def private_handler(m: types.Message) -> None:
         disable_web_page_preview=True,
     )
 
-    # إعداد التفاعل
     init_entry(sent.chat.id, sent.message_id)
     bot.edit_message_reply_markup(
         sent.chat.id,
@@ -421,6 +428,13 @@ if __name__ == "__main__":
     logging.info("🚀 @sarr7neBot is running…")
     logging.info(f"👑 المالك: {ADMIN_ID}")
     logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
+
+    # تشغيل سيرفر الويب أولاً
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+    logging.info("🌐 Web server started")
+
+    # تشغيل البوت
     bot.infinity_polling(
         timeout=20,
         long_polling_timeout=20,

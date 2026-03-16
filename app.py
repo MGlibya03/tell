@@ -282,7 +282,7 @@ def cmd_start(m: types.Message) -> None:
         bot.send_message(
             m.chat.id,
             (
-                f"✉️ <b>إرسال رسالة مجهولة إلى {target_name}</b>\n\n"
+                "✉️ <b>إرسال رسالة مجهولة</b>\n\n"
                 "📝 اكتب رسالتك الآن...\n"
                 "🔒 هويتك ستكون مخفية تماماً"
             ),
@@ -538,7 +538,6 @@ def private_handler(m: types.Message) -> None:
             m,
             (
                 "✅ <b>تم إرسال رسالتك المجهولة بنجاح!</b>\n\n"
-                f"📤 إلى: {target_name}\n"
                 "🔒 هويتك مخفية تماماً"
             ),
             reply_markup=types.InlineKeyboardMarkup([
@@ -616,8 +615,8 @@ def check_sub_handler(call: types.CallbackQuery) -> None:
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=(
-                f"✅ <b>تم التحقّق بنجاح!</b>\n\n"
-                f"✉️ <b>إرسال رسالة مجهولة إلى {target_name}</b>\n\n"
+                "✅ <b>تم التحقّق بنجاح!</b>\n\n"
+                "✉️ <b>إرسال رسالة مجهولة</b>\n\n"
                 "📝 اكتب رسالتك الآن...\n"
                 "🔒 هويتك ستكون مخفية تماماً"
             ),
@@ -716,8 +715,8 @@ def inline_handler(query):
         description="أرسل رابطك لأصدقائك ليصارحوك",
         input_message_content=types.InputTextMessageContent(
             message_text=(
-                f"▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
-                f"▫️ هنا يمكنك إرسال أي رسالة إلى <b>{full_name}</b> , "
+                "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
+                "▫️ هنا يمكنك إرسال أي رسالة بشكل مجهول , "
                 "أنا مستعد لمواجهة الصراحة 😅\n\n"
                 "⬇️ اضغط الزر وصارحني ⬇️"
             ),

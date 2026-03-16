@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-بوت صارحني – @sarr7neBot
-كل مستخدم يحصل على رابط خاص به لاستقبال رسائل مجهولة
-"""
 
 from __future__ import annotations
 import os
@@ -37,7 +33,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# حالات المستخدمين (لتتبع من يرسل لمن)
+# حالات المستخدمين
 user_states: Dict[int, dict] = {}
 
 # ─────────────── Flask Web Server ───────────────
@@ -56,7 +52,7 @@ def run_web():
     web_app.run(host="0.0.0.0", port=port)
 
 
-# ─────────────── إدارة المستخدمين ───────────────
+# ─────────────── قاعدة بيانات المستخدمين ───────────────
 
 def load_users() -> dict:
     if USERS_FILE.exists():
@@ -72,7 +68,7 @@ def save_users(users: dict) -> None:
         with USERS_FILE.open("w", encoding="utf-8") as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
     except Exception:
-        logging.exception("تعذّر حفظ المستخدمين")
+        logging.exception("تعذّر حفظ بيانات المستخدمين")
 
 def save_user(user) -> dict:
     users = load_users()
@@ -86,7 +82,7 @@ def save_user(user) -> dict:
     save_users(users)
     return users[str(user.id)]
 
-def get_user(user_id: int) -> dict | None:
+def get_user(user_id: int) -> dict:
     users = load_users()
     return users.get(str(user_id))
 
@@ -94,7 +90,7 @@ def get_users_count() -> int:
     return len(load_users())
 
 
-# ─────────────── تحميل التفاعلات ───────────────
+# ─────────────── التفاعلات ───────────────
 
 if REACTION_FILE.exists():
     with REACTION_FILE.open(encoding="utf-8") as f:
@@ -128,7 +124,8 @@ def save_messages_log(logs: list) -> None:
     except Exception:
         logging.exception("تعذّر حفظ سجل الرسائل")
 
-def log_message(sender, recipient_id: int, recipient_name: str, message_text: str) -> dict:
+def log_message(sender, recipient_id, recipient_name: str,
+                recipient_username: str, message_text: str) -> dict:
     logs = load_messages_log()
     sender_name = (sender.first_name or "") + (
         f" {sender.last_name}" if sender.last_name else ""
@@ -144,6 +141,7 @@ def log_message(sender, recipient_id: int, recipient_name: str, message_text: st
         "recipient": {
             "id": recipient_id,
             "name": recipient_name,
+            "username": recipient_username,
         },
         "message_text": message_text
     }
@@ -163,8 +161,9 @@ def search_by_user(user_id: int) -> list:
     return [l for l in logs if l["sender"]["id"] == user_id or l["recipient"]["id"] == user_id]
 
 
-def send_owner_notification(sender, recipient_id: int, recipient_name: str,
-                            recipient_username: str, message_text: str, log_entry: dict) -> None:
+def send_owner_notification(sender, recipient_id, recipient_name: str,
+                            recipient_username: str, message_text: str,
+                            log_entry: dict) -> None:
     sender_name = log_entry["sender"]["name"]
     sender_username = log_entry["sender"]["username"]
 
@@ -220,7 +219,8 @@ def build_keyboard(chat_id: int, msg_id: int) -> types.InlineKeyboardMarkup:
     )
     return kb
 
-def get_subscribe_keyboard() -> types.InlineKeyboardMarkup:
+def get_subscribe_keyboard(target_id: int = 0) -> types.InlineKeyboardMarkup:
+    """كيبورد الاشتراك — يحفظ target_id عشان ما يضيع"""
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton(
@@ -229,7 +229,7 @@ def get_subscribe_keyboard() -> types.InlineKeyboardMarkup:
         ),
         types.InlineKeyboardButton(
             "✅ تم الاشتراك — تحقّق",
-            callback_data="check_sub"
+            callback_data=f"checksub_{target_id}"
         )
     )
     return kb
@@ -248,8 +248,14 @@ def is_channel_member(user_id: int) -> bool:
         logging.warning("خطأ في فحص العضوية: %s", e)
         return False
 
-def get_user_link(user_id: int) -> str:
-    return f"https://t.me/{BOT_USERNAME}?start={user_id}"
+def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🔗 إنشاء رابطك الخاص", callback_data="get_link"),
+        types.InlineKeyboardButton("💌 رسائلي", callback_data="my_messages"),
+        types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
+    )
+    return kb
 
 
 # ─────────────── أمر /start ───────────────
@@ -259,7 +265,16 @@ def cmd_start(m: types.Message) -> None:
     user = m.from_user
     save_user(user)
 
-    # التحقّق من الاشتراك
+    # استخراج target_id من الرابط
+    args = m.text.split()
+    target_id = 0
+    if len(args) > 1:
+        try:
+            target_id = int(args[1])
+        except ValueError:
+            target_id = 0
+
+    # ═══ فحص اشتراك المُرسِل ═══
     if not is_channel_member(user.id):
         bot.send_message(
             m.chat.id,
@@ -267,26 +282,28 @@ def cmd_start(m: types.Message) -> None:
                 "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>\n\n"
                 "📢 اشترك في القناة ثم اضغط «تحقّق» 👇"
             ),
-            reply_markup=get_subscribe_keyboard()
+            reply_markup=get_subscribe_keyboard(target_id)
         )
         return
 
-    # التحقق من وجود بارامتر (رابط شخص آخر)
-    args = m.text.split()
+    # ═══ المستخدم ضغط على رابط شخص ═══
+    if target_id > 0:
 
-    if len(args) > 1:
-        try:
-            target_id = int(args[1])
-        except ValueError:
-            bot.reply_to(m, "❌ رابط غير صالح!")
-            return
-
-        # لا يمكن إرسال رسالة لنفسك
+        # لا يمكنه مراسلة نفسه
         if target_id == user.id:
             bot.reply_to(m, "❌ لا يمكنك إرسال رسالة مجهولة لنفسك!")
             return
 
-        # جلب بيانات المستلم
+        # ═══ فحص اشتراك المُستلِم ═══
+        if not is_channel_member(target_id):
+            bot.send_message(
+                m.chat.id,
+                "❌ <b>هذا المستخدم غير مشترك في القناة!</b>\n"
+                "لا يمكن إرسال رسالة له حتى يشترك."
+            )
+            return
+
+        # جلب اسم المستلم
         target_data = get_user(target_id)
         if target_data:
             target_name = target_data["full_name"]
@@ -297,7 +314,7 @@ def cmd_start(m: types.Message) -> None:
             except Exception:
                 target_name = "مستخدم"
 
-        # حفظ حالة المستخدم
+        # حفظ الحالة
         user_states[user.id] = {
             "action": "send_anon",
             "target_id": target_id,
@@ -312,23 +329,14 @@ def cmd_start(m: types.Message) -> None:
             (
                 f"✉️ <b>إرسال رسالة مجهولة إلى {target_name}</b>\n\n"
                 "📝 اكتب رسالتك الآن...\n"
-                "🔒 هويتك ستكون مخفية تماماً\n\n"
-                "▪️ <i>حانت لحظة الصراحة</i>"
+                "🔒 هويتك ستكون مخفية تماماً"
             ),
             reply_markup=kb
         )
         return
 
-    # الصفحة الرئيسية (بدون بارامتر)
+    # ═══ الصفحة الرئيسية ═══
     full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
-    link = get_user_link(user.id)
-
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton("🌐 إنشاء رابط خاص بي", callback_data="get_link"),
-        types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
-        types.InlineKeyboardButton("⚙️ المساعدة", callback_data="help"),
-    )
 
     bot.send_message(
         m.chat.id,
@@ -336,45 +344,42 @@ def cmd_start(m: types.Message) -> None:
             f"أهلاً بك : (<b>{full_name}</b>)\n\n"
             "▪️ <b>بوت صارحني</b>\n\n"
             "▫️ احصل على نقد بناء بسرية تامة من زملائك وأصدقائك.\n\n"
-            "🌐 احصل على رابطك الخاص\n"
+            "🔗 احصل على رابطك الخاص\n"
             "💌 اقرأ ما كتبه الناس عنك\n"
-            "⚙️ أوامر البوت - /help\n"
-            "─"
+            "⚙️ أوامر البوت - /help"
         ),
-        reply_markup=kb
+        reply_markup=get_main_keyboard(user.id)
     )
 
-
-# ─────────────── أمر /mylink ───────────────
 
 @bot.message_handler(commands=["mylink"])
 def cmd_mylink(m: types.Message) -> None:
-    save_user(m.from_user)
-    link = get_user_link(m.from_user.id)
+    user = m.from_user
+    save_user(user)
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(
-            "📤 شارك الرابط",
-            switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
-        )
-    )
+    if not is_channel_member(user.id):
+        bot.reply_to(m, "⚠️ اشترك في القناة أولاً!",
+                     reply_markup=get_subscribe_keyboard(0))
+        return
 
+    link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
     bot.send_message(
         m.chat.id,
         (
             "▪️ <b>الرابط الخاص بك</b>\n\n"
             f"▫️ <code>{link}</code>\n\n"
-            "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين أصدقائك "
-            "أو في مواقع التواصل الاجتماعي.\n\n"
-            "▪️ <i>حانت لحظة الصراحة</i>\n"
-            "─"
+            "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
+            "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
+            "▪️ حانت لحظة الصراحة 💬"
         ),
-        reply_markup=kb
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
+                "📤 شارك الرابط",
+                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
+            )]
+        ])
     )
 
-
-# ─────────────── أمر /help ───────────────
 
 @bot.message_handler(commands=["help"])
 def cmd_help(m: types.Message) -> None:
@@ -382,21 +387,20 @@ def cmd_help(m: types.Message) -> None:
         m.chat.id,
         (
             "⚙️ <b>أوامر البوت:</b>\n\n"
-            "▫️ /start — القائمة الرئيسية\n"
-            "▫️ /mylink — رابطك الشخصي\n"
-            "▫️ /help — المساعدة\n"
-            "▫️ /id — معرّفك الشخصي\n\n"
-            "<b>كيف يعمل البوت؟</b>\n"
-            "1️⃣ أرسل /start أو اضغط «إنشاء رابط»\n"
-            "2️⃣ شارك الرابط مع أصدقائك\n"
-            "3️⃣ يرسلون لك رسائل مجهولة\n"
-            "4️⃣ تصلك الرسالة بدون معرفة المرسل\n\n"
-            "⚠️ يجب الاشتراك في القناة لاستخدام البوت"
-        )
+            "▪️ /start — القائمة الرئيسية\n"
+            "▪️ /mylink — رابطك الخاص\n"
+            "▪️ /help — المساعدة\n"
+            "▪️ /id — معرّفك\n\n"
+            "<b>كيف يعمل؟</b>\n"
+            "1️⃣ اشترك في القناة\n"
+            "2️⃣ أرسل /start للحصول على رابطك\n"
+            "3️⃣ شارك الرابط مع أصدقائك\n"
+            "4️⃣ سيتمكنون من إرسال رسائل مجهولة لك\n"
+            "5️⃣ تصلك الرسالة بدون معرفة المرسل 🔒\n\n"
+            "⚠️ يجب أن يكون المرسل والمستلم مشتركين في القناة"
+        ),
     )
 
-
-# ─────────────── أمر /id ───────────────
 
 @bot.message_handler(commands=["id"])
 def cmd_id(m: types.Message) -> None:
@@ -428,6 +432,7 @@ def cmd_stats(m: types.Message) -> None:
         "━━━━━━━━━━━━━━━━━"
     ))
 
+
 @bot.message_handler(commands=["logs"])
 def cmd_logs(m: types.Message) -> None:
     if m.from_user.id != ADMIN_ID:
@@ -449,7 +454,7 @@ def cmd_logs(m: types.Message) -> None:
         text += (
             f"━━━ #{log['msg_number']} ━━━\n"
             f"📤 <b>من:</b> {s['name']} (@{s['username']}) [<code>{s['id']}</code>]\n"
-            f"📥 <b>إلى:</b> {r['name']} [<code>{r['id']}</code>]\n"
+            f"📥 <b>إلى:</b> {r['name']} (@{r['username']}) [<code>{r['id']}</code>]\n"
             f"💬 <b>الرسالة:</b> {log['message_text'][:100]}\n"
             f"🕐 {log['timestamp']}\n\n"
         )
@@ -460,6 +465,7 @@ def cmd_logs(m: types.Message) -> None:
             bot.send_message(m.chat.id, chunk)
     else:
         bot.reply_to(m, text)
+
 
 @bot.message_handler(commands=["search"])
 def cmd_search(m: types.Message) -> None:
@@ -484,23 +490,23 @@ def cmd_search(m: types.Message) -> None:
         bot.reply_to(m, f"📭 لا توجد رسائل للمستخدم <code>{search_id}</code>")
         return
 
-    text = f"🔍 <b>رسائل المستخدم</b> <code>{search_id}</code>\n"
-    text += f"📊 عدد الرسائل: <b>{len(results)}</b>\n\n"
+    sent = [r for r in results if r["sender"]["id"] == search_id]
+    received = [r for r in results if r["recipient"]["id"] == search_id]
 
+    text = (
+        f"🔍 <b>نتائج البحث للمستخدم</b> <code>{search_id}</code>\n"
+        f"📤 أرسل: <b>{len(sent)}</b> رسالة\n"
+        f"📥 استقبل: <b>{len(received)}</b> رسالة\n\n"
+    )
     for log in results[-15:]:
         s = log["sender"]
         r = log["recipient"]
-        if s["id"] == search_id:
-            direction = "📤 أرسل"
-        else:
-            direction = "📥 استقبل"
+        direction = "📤" if s["id"] == search_id else "📥"
         text += (
-            f"━━━ #{log['msg_number']} ━━━\n"
-            f"{direction}\n"
-            f"📤 من: {s['name']} [<code>{s['id']}</code>]\n"
-            f"📥 إلى: {r['name']} [<code>{r['id']}</code>]\n"
-            f"💬 {log['message_text'][:80]}\n"
-            f"🕐 {log['timestamp']}\n\n"
+            f"{direction} #{log['msg_number']} | "
+            f"من {s['name']} → إلى {r['name']}\n"
+            f"   💬 {log['message_text'][:60]}\n"
+            f"   🕐 {log['timestamp']}\n\n"
         )
 
     if len(text) > 4000:
@@ -509,6 +515,7 @@ def cmd_search(m: types.Message) -> None:
             bot.send_message(m.chat.id, chunk)
     else:
         bot.reply_to(m, text)
+
 
 @bot.message_handler(commands=["users"])
 def cmd_users(m: types.Message) -> None:
@@ -522,39 +529,30 @@ def cmd_users(m: types.Message) -> None:
     text = f"👥 <b>المستخدمين ({len(all_users)}):</b>\n\n"
     for uid, data in list(all_users.items())[-20:]:
         text += (
-            f"• <b>{data['full_name']}</b> | "
-            f"@{data['username'] or 'بدون'} | "
-            f"<code>{data['id']}</code>\n"
+            f"• <b>{data['full_name']}</b> | @{data['username'] or 'بدون'} "
+            f"| <code>{data['id']}</code>\n"
         )
-
-    if len(text) > 4000:
-        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
-        for chunk in chunks:
-            bot.send_message(m.chat.id, chunk)
-    else:
-        bot.reply_to(m, text)
+    bot.reply_to(m, text)
 
 
-# ─────────────── استقبال الرسائل النصية ───────────────
+# ─────────────── استقبال الرسائل الخاصة ───────────────
 
 @bot.message_handler(func=lambda msg: msg.chat.type == "private", content_types=["text"])
 def private_handler(m: types.Message) -> None:
     user = m.from_user
     save_user(user)
 
-    # التحقّق من الاشتراك
+    # ═══ فحص اشتراك المُرسِل ═══
     if not is_channel_member(user.id):
+        target_id = user_states.get(user.id, {}).get("target_id", 0)
         bot.reply_to(
             m,
-            (
-                "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>\n\n"
-                f"📢 اشترك في @{CHANNEL_USERNAME} ثم أرسل رسالتك مرة أخرى 👇"
-            ),
-            reply_markup=get_subscribe_keyboard()
+            "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>",
+            reply_markup=get_subscribe_keyboard(target_id)
         )
         return
 
-    # التحقق من حالة المستخدم
+    # ═══ التحقّق من حالة المستخدم ═══
     state = user_states.get(user.id)
 
     if state and state.get("action") == "send_anon":
@@ -563,15 +561,22 @@ def private_handler(m: types.Message) -> None:
         target_name = state["target_name"]
         del user_states[user.id]
 
+        # ═══ فحص اشتراك المُستلِم مرة أخرى ═══
+        if not is_channel_member(target_id):
+            bot.reply_to(
+                m,
+                "❌ <b>المُستلِم غير مشترك في القناة!</b>\n"
+                "لا يمكن إرسال الرسالة حتى يشترك."
+            )
+            return
+
         # جلب بيانات المستلم
         target_data = get_user(target_id)
         target_username = target_data["username"] if target_data else "بدون"
 
-        # تسجيل الرسالة + إشعار المالك
-        log_entry = log_message(user, target_id, target_name, m.text)
-        send_owner_notification(
-            user, target_id, target_name, target_username, m.text, log_entry
-        )
+        # تسجيل + إشعار المالك
+        log_entry = log_message(user, target_id, target_name, target_username, m.text)
+        send_owner_notification(user, target_id, target_name, target_username, m.text, log_entry)
 
         # توجيه الأصل للأدمن
         try:
@@ -579,53 +584,45 @@ def private_handler(m: types.Message) -> None:
         except Exception:
             logging.exception("تعذّر توجيه الرسالة للأدمن")
 
-        # إرسال الرسالة المجهولة للمستلم
-        recipient_kb = types.InlineKeyboardMarkup(row_width=1)
-        recipient_kb.add(
-            types.InlineKeyboardButton(
+        # إرسال الرسالة للمستلم
+        reply_kb = types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
                 "↩️ رد برسالة مجهولة",
                 url=f"https://t.me/{BOT_USERNAME}?start={user.id}"
-            )
-        )
+            )],
+            [types.InlineKeyboardButton(
+                "🔗 رابطك الخاص",
+                callback_data="get_link"
+            )]
+        ])
 
         try:
             bot.send_message(
                 target_id,
-                (
-                    "📩 <b>وصلتك رسالة مجهولة:</b>\n\n"
-                    f"{m.text}\n\n"
-                    "─\n"
-                    "🔒 <i>هوية المرسل مخفية</i>"
-                ),
-                reply_markup=recipient_kb
+                f"📩 <b>وصلتك رسالة مجهولة:</b>\n\n{m.text}",
+                reply_markup=reply_kb
             )
-        except ApiTelegramException:
-            bot.reply_to(m, "❌ المستخدم لم يبدأ محادثة مع البوت بعد!")
-            return
-        except Exception as e:
-            bot.reply_to(m, "❌ حدث خطأ في الإرسال!")
-            logging.exception("خطأ في الإرسال: %s", e)
+        except Exception:
+            bot.reply_to(m, "❌ تعذّر إرسال الرسالة! المستلم ربما لم يبدأ البوت.")
             return
 
         # نشر في القناة
         try:
             sent = bot.send_message(
                 TARGET_CHANNEL_ID,
-                (
-                    f"📩 <b>رسالة مجهولة جديدة لـ {target_name}:</b>\n\n"
-                    f"{m.text}"
-                ),
+                f"📩 <b>رسالة مجهولة جديدة لـ {target_name}:</b>\n\n{m.text}",
                 reply_markup=build_keyboard(TARGET_CHANNEL_ID, 0),
                 disable_web_page_preview=True,
             )
             init_entry(sent.chat.id, sent.message_id)
             bot.edit_message_reply_markup(
-                sent.chat.id, sent.message_id,
+                sent.chat.id,
+                sent.message_id,
                 reply_markup=build_keyboard(sent.chat.id, sent.message_id),
             )
             save_reactions()
         except Exception:
-            logging.exception("خطأ في النشر بالقناة")
+            logging.exception("تعذّر النشر في القناة")
 
         # تأكيد الإرسال
         bot.reply_to(
@@ -633,108 +630,115 @@ def private_handler(m: types.Message) -> None:
             (
                 "✅ <b>تم إرسال رسالتك المجهولة بنجاح!</b>\n\n"
                 f"📤 إلى: {target_name}\n"
-                "🔒 هويتك مخفية تماماً عن المستلم"
-            )
+                "🔒 هويتك مخفية تماماً"
+            ),
+            reply_markup=types.InlineKeyboardMarkup([
+                [types.InlineKeyboardButton(
+                    "✉️ إرسال رسالة أخرى",
+                    url=f"https://t.me/{BOT_USERNAME}?start={target_id}"
+                )]
+            ])
         )
+        return
 
-    else:
-        # ═══ رسالة بدون هدف — أرشد المستخدم ═══
-        link = get_user_link(user.id)
-        bot.reply_to(
-            m,
-            (
-                "💡 <b>لإرسال رسالة مجهولة:</b>\n"
-                "اضغط على رابط الشخص المراد إرسال رسالة له.\n\n"
-                "📤 <b>لاستقبال رسائل مجهولة:</b>\n"
-                f"شارك رابطك: <code>{link}</code>"
-            )
+    # ═══ رسالة بدون سياق — للقناة مباشرة ═══
+    log_entry = log_message(user, TARGET_CHANNEL_ID, "📢 القناة", CHANNEL_USERNAME, m.text)
+    send_owner_notification(user, TARGET_CHANNEL_ID, "📢 القناة", CHANNEL_USERNAME, m.text, log_entry)
+
+    try:
+        bot.forward_message(ADMIN_ID, m.chat.id, m.message_id)
+    except Exception:
+        logging.exception("تعذّر توجيه الرسالة للأدمن")
+
+    sent = bot.send_message(
+        TARGET_CHANNEL_ID,
+        f"📩 <b>رسالة مجهولة:</b>\n{m.text}",
+        reply_markup=build_keyboard(TARGET_CHANNEL_ID, 0),
+        disable_web_page_preview=True,
+    )
+
+    init_entry(sent.chat.id, sent.message_id)
+    bot.edit_message_reply_markup(
+        sent.chat.id,
+        sent.message_id,
+        reply_markup=build_keyboard(sent.chat.id, sent.message_id),
+    )
+    save_reactions()
+
+    bot.reply_to(m, "✅ تم نشر رسالتك بسرّيّة!")
+
+
+# ─────────────── معالجة الأزرار ───────────────
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("checksub_"))
+def check_sub_handler(call: types.CallbackQuery) -> None:
+    """✅ زر التحقّق — يحفظ target_id عشان ما يضيع"""
+    try:
+        target_id = int(call.data.split("_")[1])
+    except (IndexError, ValueError):
+        target_id = 0
+
+    if not is_channel_member(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            f"❌ لم تشترك بعد!\nاشترك في @{CHANNEL_USERNAME} أولاً",
+            show_alert=True
         )
+        return
 
+    # ═══ مشترك — الآن نشوف وين نوجّهه ═══
+    save_user(call.from_user)
+    bot.answer_callback_query(call.id, "✅ تم التحقّق!", show_alert=True)
 
-# ─────────────── أزرار Callback ───────────────
+    if target_id > 0:
+        # ═══ كان جاي من رابط شخص — نرجعه لنفس المسار ═══
 
-@bot.callback_query_handler(func=lambda c: True)
-def callback_handler(call: types.CallbackQuery) -> None:
-    data = call.data
-    user = call.from_user
-
-    # ═══ التحقق من الاشتراك ═══
-    if data == "check_sub":
-        if is_channel_member(user.id):
-            save_user(user)
-            full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
-            link = get_user_link(user.id)
-
-            bot.answer_callback_query(call.id, "✅ تم التحقّق بنجاح!", show_alert=True)
-
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            kb.add(
-                types.InlineKeyboardButton("🌐 إنشاء رابط خاص بي", callback_data="get_link"),
-                types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
-                types.InlineKeyboardButton("⚙️ المساعدة", callback_data="help"),
-            )
-
+        # فحص اشتراك المستلم
+        if not is_channel_member(target_id):
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                text=(
-                    f"أهلاً بك : (<b>{full_name}</b>)\n\n"
-                    "▪️ <b>بوت صارحني</b>\n\n"
-                    "▫️ احصل على نقد بناء بسرية تامة من زملائك وأصدقائك.\n\n"
-                    "🌐 احصل على رابطك الخاص\n"
-                    "💌 اقرأ ما كتبه الناس عنك\n"
-                    "⚙️ أوامر البوت - /help\n"
-                    "─"
-                ),
-                reply_markup=kb
+                text="❌ <b>المُستلِم غير مشترك في القناة!</b>\nلا يمكن إرسال رسالة له."
             )
+            return
+
+        # جلب اسم المستلم
+        target_data = get_user(target_id)
+        if target_data:
+            target_name = target_data["full_name"]
         else:
-            bot.answer_callback_query(
-                call.id,
-                f"❌ لم تشترك بعد!\nاشترك في @{CHANNEL_USERNAME} أولاً",
-                show_alert=True
-            )
+            try:
+                t_user = bot.get_chat(target_id)
+                target_name = t_user.first_name or "مستخدم"
+            except Exception:
+                target_name = "مستخدم"
 
-    # ═══ إنشاء رابط خاص ═══
-    elif data == "get_link":
-        save_user(user)
-        link = get_user_link(user.id)
+        # حفظ الحالة
+        user_states[call.from_user.id] = {
+            "action": "send_anon",
+            "target_id": target_id,
+            "target_name": target_name
+        }
 
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton(
-                "📤 شارك الرابط",
-                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
-            ),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_home"),
-        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel"))
 
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=(
-                "▪️ <b>الرابط الخاص بك</b>\n\n"
-                f"▫️ <code>{link}</code>\n\n"
-                "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
-                "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
-                "▪️ <i>حانت لحظة الصراحة</i>\n"
-                "─"
+                f"✅ <b>تم التحقّق بنجاح!</b>\n\n"
+                f"✉️ <b>إرسال رسالة مجهولة إلى {target_name}</b>\n\n"
+                "📝 اكتب رسالتك الآن...\n"
+                "🔒 هويتك ستكون مخفية تماماً"
             ),
             reply_markup=kb
         )
-        bot.answer_callback_query(call.id)
-
-    # ═══ رجوع للرئيسية ═══
-    elif data == "back_home":
-        full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
-
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            types.InlineKeyboardButton("🌐 إنشاء رابط خاص بي", callback_data="get_link"),
-            types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
-            types.InlineKeyboardButton("⚙️ المساعدة", callback_data="help"),
+    else:
+        # ═══ ما في رابط — نعرض الصفحة الرئيسية ═══
+        full_name = call.from_user.first_name + (
+            f" {call.from_user.last_name}" if call.from_user.last_name else ""
         )
-
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
@@ -742,80 +746,104 @@ def callback_handler(call: types.CallbackQuery) -> None:
                 f"أهلاً بك : (<b>{full_name}</b>)\n\n"
                 "▪️ <b>بوت صارحني</b>\n\n"
                 "▫️ احصل على نقد بناء بسرية تامة من زملائك وأصدقائك.\n\n"
-                "🌐 احصل على رابطك الخاص\n"
+                "🔗 احصل على رابطك الخاص\n"
                 "💌 اقرأ ما كتبه الناس عنك\n"
-                "⚙️ أوامر البوت - /help\n"
-                "─"
+                "⚙️ أوامر البوت - /help"
             ),
-            reply_markup=kb
+            reply_markup=get_main_keyboard(call.from_user.id)
         )
-        bot.answer_callback_query(call.id)
 
-    # ═══ المساعدة ═══
-    elif data == "help":
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_home"))
 
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=(
-                "⚙️ <b>كيف يعمل البوت؟</b>\n\n"
-                "1️⃣ اضغط «إنشاء رابط خاص» للحصول على رابطك\n"
-                "2️⃣ شارك الرابط مع أصدقائك\n"
-                "3️⃣ يرسلون لك رسائل مجهولة عبر الرابط\n"
-                "4️⃣ تصلك الرسالة بدون معرفة المرسل\n\n"
-                "<b>الأوامر:</b>\n"
-                "▫️ /start — القائمة الرئيسية\n"
-                "▫️ /mylink — رابطك الشخصي\n"
-                "▫️ /help — المساعدة\n"
-                "▫️ /id — معرّفك"
-            ),
-            reply_markup=kb
+@bot.callback_query_handler(func=lambda c: c.data == "get_link")
+def get_link_handler(call: types.CallbackQuery) -> None:
+    user = call.from_user
+
+    if not is_channel_member(user.id):
+        bot.answer_callback_query(call.id, "⚠️ اشترك في القناة أولاً!", show_alert=True)
+        return
+
+    link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        (
+            "▪️ <b>الرابط الخاص بك</b>\n\n"
+            f"▫️ <code>{link}</code>\n\n"
+            "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
+            "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
+            "▪️ حانت لحظة الصراحة 💬"
+        ),
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
+                "📤 شارك الرابط",
+                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
+            )]
+        ])
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "my_messages")
+def my_messages_handler(call: types.CallbackQuery) -> None:
+    user_id = call.from_user.id
+    logs = load_messages_log()
+    received = [l for l in logs if l["recipient"]["id"] == user_id]
+
+    if not received:
+        bot.answer_callback_query(call.id, "📭 لم تصلك أي رسائل بعد!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    text = f"💌 <b>رسائلك ({len(received)}):</b>\n\n"
+    for msg in received[-10:]:
+        text += (
+            f"━━━ #{msg['msg_number']} ━━━\n"
+            f"💬 {msg['message_text'][:100]}\n"
+            f"🕐 {msg['timestamp']}\n\n"
         )
-        bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, text)
 
-    # ═══ إلغاء ═══
-    elif data == "cancel":
-        if user.id in user_states:
-            del user_states[user.id]
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text="❌ تم الإلغاء"
-        )
-        bot.answer_callback_query(call.id)
 
-    # ═══ التفاعلات ═══
-    elif data.split("|", 1)[0] in ("heart", "laugh", "cry"):
-        action, cid, mid = data.split("|")
-        chat_id, msg_id = int(cid), int(mid)
-        user_id = user.id
+@bot.callback_query_handler(func=lambda c: c.data == "cancel")
+def cancel_handler(call: types.CallbackQuery) -> None:
+    if call.from_user.id in user_states:
+        del user_states[call.from_user.id]
+    bot.answer_callback_query(call.id, "❌ تم الإلغاء")
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="❌ تم إلغاء الإرسال."
+    )
 
-        init_entry(chat_id, msg_id)
-        entry = reaction_data[msg_key(chat_id, msg_id)]
-        counts, users = entry["counts"], entry["users"]
 
-        prev = users.get(str(user_id))
-        if prev == action:
-            bot.answer_callback_query(call.id, "💡 سبق أن اخترت هذا الرمز.")
-            return
+# ─────────────── التفاعلات ───────────────
 
-        if prev:
-            counts[prev] = max(0, counts[prev] - 1)
-        counts[action] += 1
-        users[str(user_id)] = action
-        save_reactions()
+@bot.callback_query_handler(func=lambda c: c.data.split("|", 1)[0] in ("heart", "laugh", "cry"))
+def reaction_handler(call: types.CallbackQuery) -> None:
+    action, cid, mid = call.data.split("|")
+    chat_id, msg_id = int(cid), int(mid)
+    user_id = call.from_user.id
 
-        try:
-            bot.edit_message_reply_markup(
-                chat_id, msg_id,
-                reply_markup=build_keyboard(chat_id, msg_id)
-            )
-        except ApiTelegramException:
-            pass
+    init_entry(chat_id, msg_id)
+    entry = reaction_data[msg_key(chat_id, msg_id)]
+    counts, users = entry["counts"], entry["users"]
 
-        bot.answer_callback_query(call.id, "✅ تم تسجيل تفاعلك.")
+    prev = users.get(str(user_id))
+    if prev == action:
+        bot.answer_callback_query(call.id, "💡 سبق أن اخترت هذا الرمز.")
+        return
+
+    if prev:
+        counts[prev] = max(0, counts[prev] - 1)
+    counts[action] += 1
+    users[str(user_id)] = action
+    save_reactions()
+
+    try:
+        bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=build_keyboard(chat_id, msg_id))
+    except ApiTelegramException:
+        pass
+
+    bot.answer_callback_query(call.id, "✅ تم تسجيل تفاعلك.")
 
 
 # ─────────────── محتوى غير مدعوم ───────────────

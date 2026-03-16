@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت الرسائل المجهولة – نشر إلى قناة مع تفاعل واحد لكل مستخدم وتخزين JSON
-──────────────────────────────────────────────────────────────────────────
-• يستقبل رسائل نصيّة في الخاص ويعيد نشرها مجهولة في القناة.
-• يوجِّه الأصل إلى الأدمن لرؤية المُرسِل.
-• يضيف أزرار تفاعل ❤️ / 😂 / 😢 بعدّادات تُحفَظ في ملف JSON.
-• كل مستخدم له صوت واحد لكل رسالة؛ يمكنه استبداله.
-• يقبل الرسائل فقط من متابعي القناة.
-• ‎/id يعيد: في الخاص → مُعرّف المستخدم • في المجموعات → مُعرّف المجموعة.
+بوت الرسائل المجهولة – @sarr7neBot
 """
 
 from __future__ import annotations
@@ -17,16 +10,20 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict
+from datetime import datetime
 
 import telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
 
 # ─────────────── الإعدادات ───────────────
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "<YOUR_TOKEN>") 
-ADMIN_ID: int = <Admin_ID>
-TARGET_CHANNEL_ID: int = -100<ID>      # ⚠️ تأكّد من البادئة -100
-REACTION_FILE: Path = Path("reactions.json")   # ملف تخزين التفاعلات
+BOT_TOKEN: str = "8681380387:AAHootnxpMHM7u_6dJrGYcFNym7H7wSXq5U"
+ADMIN_ID: int = 1053838533
+TARGET_CHANNEL_ID: int = -1003747214322
+CHANNEL_USERNAME: str = "AurelianMind03"
+BOT_USERNAME: str = "sarr7neBot"
+REACTION_FILE: Path = Path("reactions.json")
+MESSAGES_LOG_FILE: Path = Path("messages_log.json")
 # ──────────────────────────────────────────
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
@@ -41,10 +38,9 @@ if REACTION_FILE.exists():
     with REACTION_FILE.open(encoding="utf-8") as f:
         reaction_data: Dict[str, Dict] = json.load(f)
 else:
-    reaction_data = {}                         # { "chat:msg": {counts:{}, users:{}} }
+    reaction_data = {}
 
 def save_reactions() -> None:
-    """حفظ القاموس إلى JSON (يُستدعى بعد كل تعديل)."""
     try:
         with REACTION_FILE.open("w", encoding="utf-8") as f:
             json.dump(reaction_data, f, ensure_ascii=False, indent=2)
@@ -52,7 +48,83 @@ def save_reactions() -> None:
         logging.exception("تعذّر حفظ ملف التفاعلات")
 
 
+# ─────────────── سجل الرسائل ───────────────
+
+def load_messages_log() -> list:
+    if MESSAGES_LOG_FILE.exists():
+        try:
+            with MESSAGES_LOG_FILE.open(encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_messages_log(logs: list) -> None:
+    try:
+        with MESSAGES_LOG_FILE.open("w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logging.exception("تعذّر حفظ سجل الرسائل")
+
+def log_message(sender, message_text: str) -> dict:
+    logs = load_messages_log()
+    sender_name = (sender.first_name or "") + (
+        f" {sender.last_name}" if sender.last_name else ""
+    )
+    entry = {
+        "msg_number": len(logs) + 1,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sender": {
+            "id": sender.id,
+            "name": sender_name.strip(),
+            "username": sender.username or "بدون_يوزر",
+        },
+        "message_text": message_text
+    }
+    logs.append(entry)
+    save_messages_log(logs)
+    return entry
+
+def get_total_messages() -> int:
+    return len(load_messages_log())
+
+def get_last_messages(count: int = 10) -> list:
+    logs = load_messages_log()
+    return logs[-count:] if logs else []
+
+def search_by_user(user_id: int) -> list:
+    logs = load_messages_log()
+    return [l for l in logs if l["sender"]["id"] == user_id]
+
+
+def send_owner_notification(sender, message_text: str, log_entry: dict) -> None:
+    sender_name = log_entry["sender"]["name"]
+    sender_username = log_entry["sender"]["username"]
+
+    notification = (
+        "🔔 <b>رسالة مجهولة جديدة</b> 🔔\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📤 <b>المُرسِل:</b>\n"
+        f"   👤 الاسم: <b>{sender_name}</b>\n"
+        f"   📧 اليوزر: @{sender_username}\n"
+        f"   🆔 الآيدي: <code>{sender.id}</code>\n"
+        f"   🔗 <a href='tg://user?id={sender.id}'>فتح المحادثة</a>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💬 <b>الرسالة:</b>\n"
+        f"{message_text}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 الوقت: {log_entry['timestamp']}\n"
+        f"🔢 رقم الرسالة: #{log_entry['msg_number']}"
+    )
+
+    try:
+        bot.send_message(ADMIN_ID, notification, disable_web_page_preview=True)
+    except Exception:
+        logging.exception("تعذّر إرسال إشعار المالك")
+
+
 # ─────────────── أدوات مساعدة ───────────────
+
 def msg_key(chat_id: int, msg_id: int) -> str:
     return f"{chat_id}:{msg_id}"
 
@@ -61,7 +133,7 @@ def init_entry(chat_id: int, msg_id: int) -> None:
     if key not in reaction_data:
         reaction_data[key] = {
             "counts": {"heart": 0, "laugh": 0, "cry": 0},
-            "users": {}  # {user_id: "heart"/"laugh"/"cry"}
+            "users": {}
         }
 
 def build_keyboard(chat_id: int, msg_id: int) -> types.InlineKeyboardMarkup:
@@ -75,34 +147,57 @@ def build_keyboard(chat_id: int, msg_id: int) -> types.InlineKeyboardMarkup:
     )
     return kb
 
+def get_subscribe_keyboard() -> types.InlineKeyboardMarkup:
+    """كيبورد الاشتراك في القناة"""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            "📢 اشترك في القناة أولاً",
+            url=f"https://t.me/{CHANNEL_USERNAME}"
+        ),
+        types.InlineKeyboardButton(
+            "✅ تم الاشتراك — تحقّق",
+            callback_data="check_sub"
+        )
+    )
+    return kb
+
 def is_channel_member(user_id: int) -> bool:
-    """
-    يتحقّق من متابعة المستخدم للقناة.
-    إذا لم تكن للبوت صلاحية `getChatMember` (CHAT_ADMIN_REQUIRED) نعدّ المستخدم متابعًا
-    حفاظًا على استمرارية الخدمة، ويمكنك تغيير السلوك بسهولة.
-    """
     try:
         member = bot.get_chat_member(TARGET_CHANNEL_ID, user_id)
         return member.status not in ("left", "kicked")
     except ApiTelegramException as e:
         if "CHAT_ADMIN_REQUIRED" in str(e):
-            logging.warning("⚠️ البوت ليس مشرفًا أو لا يملك صلاحية رؤية الأعضاء؛ سيتم تجاوز فحص الاشتراك.")
-            return True  # تجاوز الفحص عند غياب الصلاحية
-        logging.warning("ApiTelegramException في فحص العضوية: %s", e)
+            logging.warning("⚠️ البوت ليس مشرفًا؛ سيتم تجاوز فحص الاشتراك.")
+            return True
+        logging.warning("ApiTelegramException: %s", e)
         return False
     except Exception as e:
-        logging.warning("خطأ غير متوقّع في فحص العضوية: %s", e)
+        logging.warning("خطأ في فحص العضوية: %s", e)
         return False
 
 
 # ─────────────── أوامر البوت ───────────────
+
 @bot.message_handler(commands=["start"])
 def cmd_start(m: types.Message) -> None:
+    # التحقّق من الاشتراك أول شي
+    if not is_channel_member(m.from_user.id):
+        bot.send_message(
+            m.chat.id,
+            (
+                "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>\n\n"
+                "📢 اشترك في القناة ثم اضغط «تحقّق» 👇"
+            ),
+            reply_markup=get_subscribe_keyboard()
+        )
+        return
+
     bot.send_message(
         m.chat.id,
         (
             "👋 أهلاً ومرحبًا بك!\n"
-            "• أرسل رسالتك هنا، وسننشرها في الكروب بسرّيّة تامّة.\n"
+            "• أرسل رسالتك هنا، وسننشرها في القناة بسرّيّة تامّة.\n"
             "✨ استمتع بحريّة التعبير!"
         ),
     )
@@ -115,13 +210,120 @@ def cmd_id(m: types.Message) -> None:
         bot.reply_to(m, f"🆔 معرّفك الشخصي: <code>{m.from_user.id}</code>")
 
 
+# ─────────────── 👑 أوامر المالك ───────────────
+
+@bot.message_handler(commands=["stats"])
+def cmd_stats(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+    total_msgs = get_total_messages()
+    total_reactions = 0
+    for entry in reaction_data.values():
+        for count in entry.get("counts", {}).values():
+            total_reactions += count
+
+    bot.reply_to(m, (
+        "📊 <b>إحصائيات البوت:</b>\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        f"✉️ إجمالي الرسائل: <b>{total_msgs}</b>\n"
+        f"⭐ إجمالي التفاعلات: <b>{total_reactions}</b>\n"
+        "━━━━━━━━━━━━━━━━━"
+    ))
+
+@bot.message_handler(commands=["logs"])
+def cmd_logs(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+    parts = m.text.split()
+    count = 10
+    if len(parts) > 1 and parts[1].isdigit():
+        count = int(parts[1])
+
+    last = get_last_messages(count)
+    if not last:
+        bot.reply_to(m, "📭 لا توجد رسائل مسجّلة بعد!")
+        return
+
+    text = f"📋 <b>آخر {len(last)} رسالة:</b>\n\n"
+    for log in last:
+        s = log["sender"]
+        text += (
+            f"━━━ #{log['msg_number']} ━━━\n"
+            f"📤 <b>من:</b> {s['name']} (@{s['username']}) [<code>{s['id']}</code>]\n"
+            f"💬 <b>الرسالة:</b> {log['message_text'][:100]}\n"
+            f"🕐 {log['timestamp']}\n\n"
+        )
+
+    if len(text) > 4000:
+        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for chunk in chunks:
+            bot.send_message(m.chat.id, chunk)
+    else:
+        bot.reply_to(m, text)
+
+@bot.message_handler(commands=["search"])
+def cmd_search(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+    parts = m.text.split()
+    if len(parts) < 2:
+        bot.reply_to(m, (
+            "🔍 <b>البحث عن رسائل مستخدم</b>\n"
+            "الاستخدام: <code>/search آيدي_المستخدم</code>\n"
+            "مثال: <code>/search 123456789</code>"
+        ))
+        return
+    try:
+        search_id = int(parts[1])
+    except ValueError:
+        bot.reply_to(m, "❌ الآيدي يجب أن يكون رقماً!")
+        return
+
+    results = search_by_user(search_id)
+    if not results:
+        bot.reply_to(m, f"📭 لا توجد رسائل من المستخدم <code>{search_id}</code>")
+        return
+
+    text = (
+        f"🔍 <b>رسائل المستخدم</b> <code>{search_id}</code>\n"
+        f"👤 الاسم: <b>{results[0]['sender']['name']}</b>\n"
+        f"📧 اليوزر: @{results[0]['sender']['username']}\n"
+        f"📊 عدد الرسائل: <b>{len(results)}</b>\n\n"
+    )
+    for log in results[-15:]:
+        text += (
+            f"━━━ #{log['msg_number']} ━━━\n"
+            f"💬 {log['message_text'][:80]}\n"
+            f"🕐 {log['timestamp']}\n\n"
+        )
+
+    if len(text) > 4000:
+        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for chunk in chunks:
+            bot.send_message(m.chat.id, chunk)
+    else:
+        bot.reply_to(m, text)
+
+
 # ─────────────── استقبال الرسائل الخاصة ───────────────
+
 @bot.message_handler(func=lambda msg: msg.chat.type == "private", content_types=["text"])
 def private_handler(m: types.Message) -> None:
     # التحقّق من الاشتراك
     if not is_channel_member(m.from_user.id):
-        bot.reply_to(m, "⚠️ ولك حبيبي، إنت مو من نظم المعلومات شتسوي هنا؟ 😂 هذا البوت مخصص للناس الفاهمة بس، طلاب نظم المعلومات. روح دورلك غير مكان ✋")
+        bot.reply_to(
+            m,
+            (
+                "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>\n\n"
+                f"📢 اشترك في @{CHANNEL_USERNAME} ثم أرسل رسالتك مرة أخرى 👇"
+            ),
+            reply_markup=get_subscribe_keyboard()
+        )
         return
+
+    # تسجيل + إشعار المالك
+    log_entry = log_message(m.from_user, m.text)
+    send_owner_notification(m.from_user, m.text, log_entry)
 
     # توجيه الأصل للأدمن
     try:
@@ -133,7 +335,7 @@ def private_handler(m: types.Message) -> None:
     sent = bot.send_message(
         TARGET_CHANNEL_ID,
         f"📩 <b>رسالة مجهولة:</b>\n{m.text}",
-        reply_markup=build_keyboard(TARGET_CHANNEL_ID, 0),  # مؤقّت
+        reply_markup=build_keyboard(TARGET_CHANNEL_ID, 0),
         disable_web_page_preview=True,
     )
 
@@ -146,10 +348,35 @@ def private_handler(m: types.Message) -> None:
     )
     save_reactions()
 
-    bot.reply_to(m, "✅ تم نشر رسالتك بسرّيّة.!")
+    bot.reply_to(m, "✅ تم نشر رسالتك بسرّيّة!")
+
+
+# ─────────────── زر التحقّق من الاشتراك ───────────────
+
+@bot.callback_query_handler(func=lambda c: c.data == "check_sub")
+def check_sub_handler(call: types.CallbackQuery) -> None:
+    if is_channel_member(call.from_user.id):
+        bot.answer_callback_query(call.id, "✅ تم التحقّق! أنت مشترك الآن", show_alert=True)
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=(
+                "✅ <b>تم التحقّق بنجاح!</b>\n\n"
+                "👋 أهلاً ومرحبًا بك!\n"
+                "• أرسل رسالتك هنا، وسننشرها في القناة بسرّيّة تامّة.\n"
+                "✨ استمتع بحريّة التعبير!"
+            )
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            f"❌ لم تشترك بعد!\nاشترك في @{CHANNEL_USERNAME} أولاً",
+            show_alert=True
+        )
 
 
 # ─────────────── التفاعلات ───────────────
+
 @bot.callback_query_handler(func=lambda c: c.data.split("|", 1)[0] in ("heart", "laugh", "cry"))
 def reaction_handler(call: types.CallbackQuery) -> None:
     action, cid, mid = call.data.split("|")
@@ -161,11 +388,11 @@ def reaction_handler(call: types.CallbackQuery) -> None:
     counts, users = entry["counts"], entry["users"]
 
     prev = users.get(str(user_id))
-    if prev == action:                       # ضغط نفس الرمز مجدّدًا
+    if prev == action:
         bot.answer_callback_query(call.id, "💡 سبق أن اخترت هذا الرمز.")
         return
 
-    if prev:                                 # تغيير الرأي
+    if prev:
         counts[prev] = max(0, counts[prev] - 1)
     counts[action] += 1
     users[str(user_id)] = action
@@ -178,16 +405,22 @@ def reaction_handler(call: types.CallbackQuery) -> None:
 
     bot.answer_callback_query(call.id, "✅ تم تسجيل تفاعلك.")
 
+
 # ─────────────── محتوى غير مدعوم ───────────────
+
 @bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo",
                                                          "video", "sticker", "voice"])
 def unsupported(m: types.Message) -> None:
     if m.chat.type == "private":
         bot.reply_to(m, "⚠️ يدعم البوت الرسائل النصّيّة فقط للنشر المجهول.")
 
+
 # ─────────────── التشغيل ───────────────
+
 if __name__ == "__main__":
-    logging.info("🚀 Bot is running…")
+    logging.info("🚀 @sarr7neBot is running…")
+    logging.info(f"👑 المالك: {ADMIN_ID}")
+    logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
     bot.infinity_polling(
         timeout=20,
         long_polling_timeout=20,

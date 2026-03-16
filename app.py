@@ -318,6 +318,13 @@ def cmd_mylink(m: types.Message) -> None:
         return
 
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
+    
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "📤 شارك الرابط",
+        switch_inline_query=""
+    ))
+    
     bot.send_message(
         m.chat.id,
         (
@@ -327,12 +334,7 @@ def cmd_mylink(m: types.Message) -> None:
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
         ),
-        reply_markup=types.InlineKeyboardMarkup([
-            [types.InlineKeyboardButton(
-                "📤 شارك الرابط",
-                switch_inline_query=""
-            )]
-        ])
+        reply_markup=kb
     )
 
 
@@ -649,6 +651,13 @@ def get_link_handler(call: types.CallbackQuery) -> None:
         return
 
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
+    
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "📤 شارك الرابط",
+        switch_inline_query=""
+    ))
+    
     bot.answer_callback_query(call.id)
     bot.send_message(
         call.message.chat.id,
@@ -659,12 +668,7 @@ def get_link_handler(call: types.CallbackQuery) -> None:
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
         ),
-        reply_markup=types.InlineKeyboardMarkup([
-            [types.InlineKeyboardButton(
-                "📤 شارك الرابط",
-                switch_inline_query=""
-            )]
-        ])
+        reply_markup=kb
     )
 
 
@@ -711,12 +715,11 @@ def inline_handler(query):
     result = types.InlineQueryResultArticle(
         id="1",
         title="💌 شارك رابط صارحني",
-        description="أرسل رابطك لأصدقائك ليصارحوك",
+        description="اضغط لإرسال رابطك مع زر صارحني",
         input_message_content=types.InputTextMessageContent(
             message_text=(
                 "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
-                "▫️ هنا يمكنك إرسال أي رسالة إلي , "
-                "أنا مستعد لمواجهة الصراحة 😅\n\n"
+                "▫️ هنا يمكنك إرسال أي رسالة إلي , أنا مستعد لمواجهة الصراحة 😅\n\n"
                 "⬇️ ارسلها الى هنا ⬇️"
             ),
             parse_mode="HTML"

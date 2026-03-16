@@ -707,7 +707,6 @@ def cancel_handler(call: types.CallbackQuery) -> None:
 def inline_handler(query):
     user = query.from_user
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
-    full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
 
     result = types.InlineQueryResultArticle(
         id="1",
@@ -716,9 +715,9 @@ def inline_handler(query):
         input_message_content=types.InputTextMessageContent(
             message_text=(
                 "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
-                "▫️ هنا يمكنك إرسال أي رسالة بشكل مجهول , "
+                "▫️ هنا يمكنك إرسال أي رسالة إلي , "
                 "أنا مستعد لمواجهة الصراحة 😅\n\n"
-                "⬇️ اضغط الزر وصارحني ⬇️"
+                "⬇️ ارسلها الى هنا ⬇️"
             ),
             parse_mode="HTML"
         ),

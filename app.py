@@ -16,7 +16,7 @@ from telebot import types
 from telebot.apihelper import ApiTelegramException
 
 # ─────────────── الإعدادات ───────────────
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8681380387:AAHootnxpMHM7u_6dJrGYcFNym7H7wSXq5U")
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 ADMIN_ID: int = 1053838533
 TARGET_CHANNEL_ID: int = -1003747214322
 CHANNEL_USERNAME: str = "AurelianMind03"
@@ -330,7 +330,7 @@ def cmd_mylink(m: types.Message) -> None:
         reply_markup=types.InlineKeyboardMarkup([
             [types.InlineKeyboardButton(
                 "📤 شارك الرابط",
-                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
+                switch_inline_query=""
             )]
         ])
     )
@@ -550,7 +550,7 @@ def private_handler(m: types.Message) -> None:
         )
         return
 
-    # ═══ رسالة بدون رابط — نطلب منه يستخدم رابط ═══
+    # ═══ رسالة بدون رابط ═══
     bot.reply_to(
         m,
         (
@@ -663,7 +663,7 @@ def get_link_handler(call: types.CallbackQuery) -> None:
         reply_markup=types.InlineKeyboardMarkup([
             [types.InlineKeyboardButton(
                 "📤 شارك الرابط",
-                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
+                switch_inline_query=""
             )]
         ])
     )
@@ -702,6 +702,38 @@ def cancel_handler(call: types.CallbackQuery) -> None:
     )
 
 
+# ─────────────── المشاركة (Inline Query) ───────────────
+
+@bot.inline_handler(func=lambda query: True)
+def inline_handler(query):
+    user = query.from_user
+    link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
+    full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
+
+    result = types.InlineQueryResultArticle(
+        id="1",
+        title="💌 شارك رابط صارحني",
+        description="أرسل رابطك لأصدقائك ليصارحوك",
+        input_message_content=types.InputTextMessageContent(
+            message_text=(
+                f"▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
+                f"▫️ هنا يمكنك إرسال أي رسالة إلى <b>{full_name}</b> , "
+                "أنا مستعد لمواجهة الصراحة 😅\n\n"
+                "⬇️ اضغط الزر وصارحني ⬇️"
+            ),
+            parse_mode="HTML"
+        ),
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
+                "✉️ صارحني الآن",
+                url=link
+            )]
+        ])
+    )
+
+    bot.answer_inline_query(query.id, [result], cache_time=0, is_personal=True)
+
+
 # ─────────────── محتوى غير مدعوم ───────────────
 
 @bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo",
@@ -725,5 +757,5 @@ if __name__ == "__main__":
     bot.infinity_polling(
         timeout=20,
         long_polling_timeout=20,
-        allowed_updates=["message", "callback_query"],
+        allowed_updates=["message", "callback_query", "inline_query"],
     )

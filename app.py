@@ -643,4 +643,203 @@ def private_handler(m: types.Message) -> None:
         bot.reply_to(
             m,
             (
-      
+                "💡 <b>لإرسال رسالة مجهولة:</b>\n"
+                "اضغط على رابط الشخص المراد إرسال رسالة له.\n\n"
+                "📤 <b>لاستقبال رسائل مجهولة:</b>\n"
+                f"شارك رابطك: <code>{link}</code>"
+            )
+        )
+
+
+# ─────────────── أزرار Callback ───────────────
+
+@bot.callback_query_handler(func=lambda c: True)
+def callback_handler(call: types.CallbackQuery) -> None:
+    data = call.data
+    user = call.from_user
+
+    # ═══ التحقق من الاشتراك ═══
+    if data == "check_sub":
+        if is_channel_member(user.id):
+            save_user(user)
+            full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
+            link = get_user_link(user.id)
+
+            bot.answer_callback_query(call.id, "✅ تم التحقّق بنجاح!", show_alert=True)
+
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("🌐 إنشاء رابط خاص بي", callback_data="get_link"),
+                types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
+                types.InlineKeyboardButton("⚙️ المساعدة", callback_data="help"),
+            )
+
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=(
+                    f"أهلاً بك : (<b>{full_name}</b>)\n\n"
+                    "▪️ <b>بوت صارحني</b>\n\n"
+                    "▫️ احصل على نقد بناء بسرية تامة من زملائك وأصدقائك.\n\n"
+                    "🌐 احصل على رابطك الخاص\n"
+                    "💌 اقرأ ما كتبه الناس عنك\n"
+                    "⚙️ أوامر البوت - /help\n"
+                    "─"
+                ),
+                reply_markup=kb
+            )
+        else:
+            bot.answer_callback_query(
+                call.id,
+                f"❌ لم تشترك بعد!\nاشترك في @{CHANNEL_USERNAME} أولاً",
+                show_alert=True
+            )
+
+    # ═══ إنشاء رابط خاص ═══
+    elif data == "get_link":
+        save_user(user)
+        link = get_user_link(user.id)
+
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton(
+                "📤 شارك الرابط",
+                switch_inline_query=f"أرسل لي رسالة مجهولة 💌\n{link}"
+            ),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_home"),
+        )
+
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=(
+                "▪️ <b>الرابط الخاص بك</b>\n\n"
+                f"▫️ <code>{link}</code>\n\n"
+                "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
+                "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
+                "▪️ <i>حانت لحظة الصراحة</i>\n"
+                "─"
+            ),
+            reply_markup=kb
+        )
+        bot.answer_callback_query(call.id)
+
+    # ═══ رجوع للرئيسية ═══
+    elif data == "back_home":
+        full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
+
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton("🌐 إنشاء رابط خاص بي", callback_data="get_link"),
+            types.InlineKeyboardButton("📢 القناة", url=f"https://t.me/{CHANNEL_USERNAME}"),
+            types.InlineKeyboardButton("⚙️ المساعدة", callback_data="help"),
+        )
+
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=(
+                f"أهلاً بك : (<b>{full_name}</b>)\n\n"
+                "▪️ <b>بوت صارحني</b>\n\n"
+                "▫️ احصل على نقد بناء بسرية تامة من زملائك وأصدقائك.\n\n"
+                "🌐 احصل على رابطك الخاص\n"
+                "💌 اقرأ ما كتبه الناس عنك\n"
+                "⚙️ أوامر البوت - /help\n"
+                "─"
+            ),
+            reply_markup=kb
+        )
+        bot.answer_callback_query(call.id)
+
+    # ═══ المساعدة ═══
+    elif data == "help":
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_home"))
+
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=(
+                "⚙️ <b>كيف يعمل البوت؟</b>\n\n"
+                "1️⃣ اضغط «إنشاء رابط خاص» للحصول على رابطك\n"
+                "2️⃣ شارك الرابط مع أصدقائك\n"
+                "3️⃣ يرسلون لك رسائل مجهولة عبر الرابط\n"
+                "4️⃣ تصلك الرسالة بدون معرفة المرسل\n\n"
+                "<b>الأوامر:</b>\n"
+                "▫️ /start — القائمة الرئيسية\n"
+                "▫️ /mylink — رابطك الشخصي\n"
+                "▫️ /help — المساعدة\n"
+                "▫️ /id — معرّفك"
+            ),
+            reply_markup=kb
+        )
+        bot.answer_callback_query(call.id)
+
+    # ═══ إلغاء ═══
+    elif data == "cancel":
+        if user.id in user_states:
+            del user_states[user.id]
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="❌ تم الإلغاء"
+        )
+        bot.answer_callback_query(call.id)
+
+    # ═══ التفاعلات ═══
+    elif data.split("|", 1)[0] in ("heart", "laugh", "cry"):
+        action, cid, mid = data.split("|")
+        chat_id, msg_id = int(cid), int(mid)
+        user_id = user.id
+
+        init_entry(chat_id, msg_id)
+        entry = reaction_data[msg_key(chat_id, msg_id)]
+        counts, users = entry["counts"], entry["users"]
+
+        prev = users.get(str(user_id))
+        if prev == action:
+            bot.answer_callback_query(call.id, "💡 سبق أن اخترت هذا الرمز.")
+            return
+
+        if prev:
+            counts[prev] = max(0, counts[prev] - 1)
+        counts[action] += 1
+        users[str(user_id)] = action
+        save_reactions()
+
+        try:
+            bot.edit_message_reply_markup(
+                chat_id, msg_id,
+                reply_markup=build_keyboard(chat_id, msg_id)
+            )
+        except ApiTelegramException:
+            pass
+
+        bot.answer_callback_query(call.id, "✅ تم تسجيل تفاعلك.")
+
+
+# ─────────────── محتوى غير مدعوم ───────────────
+
+@bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo",
+                                                         "video", "sticker", "voice"])
+def unsupported(m: types.Message) -> None:
+    if m.chat.type == "private":
+        bot.reply_to(m, "⚠️ يدعم البوت الرسائل النصّيّة فقط للنشر المجهول.")
+
+
+# ─────────────── التشغيل ───────────────
+
+if __name__ == "__main__":
+    logging.info("🚀 @sarr7neBot is running…")
+    logging.info(f"👑 المالك: {ADMIN_ID}")
+    logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
+
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+    logging.info("🌐 Web server started")
+
+    bot.infinity_polling(
+        timeout=20,
+        long_polling_timeout=20,
+        allowed_updates=["message", "callback_query"],
+    )

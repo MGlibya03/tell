@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Dict
 from datetime import datetime
@@ -27,7 +28,12 @@ USERS_FILE: Path = Path("users.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-bot.delete_webhook()
+# ═══ حذف أي اتصال قديم لمنع التعارض ═══
+try:
+    bot.delete_webhook(drop_pending_updates=True)
+    time.sleep(2)
+except Exception:
+    pass
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -737,12 +743,31 @@ if __name__ == "__main__":
     logging.info(f"👑 المالك: {ADMIN_ID}")
     logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
 
+    # حذف أي اتصال قديم
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(3)
+    except Exception:
+        pass
+
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
     logging.info("🌐 Web server started")
 
-    bot.infinity_polling(
-        timeout=20,
-        long_polling_timeout=20,
-        allowed_updates=["message", "callback_query", "inline_query"],
-    )
+    # تشغيل البوت مع إعادة المحاولة تلقائياً
+    while True:
+        try:
+            bot.infinity_polling(
+                timeout=20,
+                long_polling_timeout=20,
+                allowed_updates=["message", "callback_query", "inline_query"],
+            )
+        except Exception as e:
+            logging.error(f"⚠️ خطأ في البوت: {e}")
+            logging.info("🔄 إعادة المحاولة بعد 5 ثواني...")
+            time.sleep(5)
+            try:
+                bot.delete_webhook(drop_pending_updates=True)
+                time.sleep(2)
+            except Exception:
+                pass

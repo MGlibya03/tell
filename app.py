@@ -28,13 +28,6 @@ USERS_FILE: Path = Path("users.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# ═══ حذف أي اتصال قديم لمنع التعارض ═══
-try:
-    bot.delete_webhook(drop_pending_updates=True)
-    time.sleep(2)
-except Exception:
-    pass
-
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
@@ -168,7 +161,7 @@ def send_owner_notification(sender, recipient_id, recipient_name: str,
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "📥 <b>المُستلِم:</b>\n"
         f"   👤 الاسم: <b>{recipient_name}</b>\n"
-        f"   📧 اليوزر: @{recipient_username}\n"
+        f"   📧 اليوزر: @{recipient_username}/n"
         f"   🆔 الآيدي: <code>{recipient_id}</code>\n"
         f"   🔗 <a href='tg://user?id={recipient_id}'>فتح المحادثة</a>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -224,8 +217,6 @@ def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     )
     return kb
 
-
-# ─────────────── أمر /start ───────────────
 
 @bot.message_handler(commands=["start"])
 def cmd_start(m: types.Message) -> None:
@@ -369,8 +360,6 @@ def cmd_id(m: types.Message) -> None:
         bot.reply_to(m, f"🆔 معرّفك الشخصي: <code>{m.from_user.id}</code>")
 
 
-# ─────────────── 👑 أوامر المالك ───────────────
-
 @bot.message_handler(commands=["stats"])
 def cmd_stats(m: types.Message) -> None:
     if m.from_user.id != ADMIN_ID:
@@ -475,8 +464,6 @@ def cmd_users(m: types.Message) -> None:
     bot.reply_to(m, text)
 
 
-# ─────────────── استقبال الرسائل الخاصة ───────────────
-
 @bot.message_handler(func=lambda msg: msg.chat.type == "private", content_types=["text"])
 def private_handler(m: types.Message) -> None:
     user = m.from_user
@@ -557,8 +544,6 @@ def private_handler(m: types.Message) -> None:
         )
     )
 
-
-# ─────────────── معالجة الأزرار ───────────────
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("checksub_"))
 def check_sub_handler(call: types.CallbackQuery) -> None:
@@ -697,8 +682,6 @@ def cancel_handler(call: types.CallbackQuery) -> None:
     )
 
 
-# ─────────────── المشاركة (Inline Query) ───────────────
-
 @bot.inline_handler(func=lambda query: True)
 def inline_handler(query):
     user = query.from_user
@@ -727,8 +710,6 @@ def inline_handler(query):
     bot.answer_inline_query(query.id, [result], cache_time=0, is_personal=True)
 
 
-# ─────────────── محتوى غير مدعوم ───────────────
-
 @bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo",
                                                          "video", "sticker", "voice"])
 def unsupported(m: types.Message) -> None:
@@ -736,17 +717,14 @@ def unsupported(m: types.Message) -> None:
         bot.reply_to(m, "⚠️ يدعم البوت الرسائل النصّيّة فقط.")
 
 
-# ─────────────── التشغيل ───────────────
-
 if __name__ == "__main__":
     logging.info("🚀 @sarr7neBot is running…")
     logging.info(f"👑 المالك: {ADMIN_ID}")
     logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
 
-    # حذف أي اتصال قديم
     try:
         bot.delete_webhook(drop_pending_updates=True)
-        time.sleep(3)
+        time.sleep(2)
     except Exception:
         pass
 
@@ -754,20 +732,9 @@ if __name__ == "__main__":
     web_thread.start()
     logging.info("🌐 Web server started")
 
-    # تشغيل البوت مع إعادة المحاولة تلقائياً
-    while True:
-        try:
-            bot.infinity_polling(
-                timeout=20,
-                long_polling_timeout=20,
-                allowed_updates=["message", "callback_query", "inline_query"],
-            )
-        except Exception as e:
-            logging.error(f"⚠️ خطأ في البوت: {e}")
-            logging.info("🔄 إعادة المحاولة بعد 5 ثواني...")
-            time.sleep(5)
-            try:
-                bot.delete_webhook(drop_pending_updates=True)
-                time.sleep(2)
-            except Exception:
-                pass
+    bot.infinity_polling(
+        timeout=20,
+        long_polling_timeout=20,
+        skip_pending=True,
+        allowed_updates=["message", "callback_query", "inline_query"],
+    )

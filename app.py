@@ -318,31 +318,17 @@ def cmd_mylink(m: types.Message) -> None:
         m.chat.id,
         (
             "▪️ <b>الرابط الخاص بك</b>\n\n"
-            f"🔗 <code>{link}</code>\n\n"
+            f"▫️ <code>{link}</code>\n\n"
             "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
-        )
-    )
-
-    bot.send_message(
-        m.chat.id,
-        (
-            "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
-            "▫️ هنا يمكنك إرسال أي رسالة إلي , أنا مستعد لمواجهة الصراحة 😅\n\n"
-            "⬇️ ارسلها الى هنا ⬇️"
         ),
         reply_markup=types.InlineKeyboardMarkup([
             [types.InlineKeyboardButton(
-                "✉️ صارحني الآن",
-                url=link
+                "📤 شارك الرابط",
+                switch_inline_query=""
             )]
         ])
-    )
-
-    bot.send_message(
-        m.chat.id,
-        "👆 <b>حوّل هذه الرسالة (Forward) إلى أي مجموعة أو محادثة لمشاركتها!</b>"
     )
 
 
@@ -652,36 +638,21 @@ def get_link_handler(call: types.CallbackQuery) -> None:
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
 
     bot.answer_callback_query(call.id)
-
     bot.send_message(
         call.message.chat.id,
         (
             "▪️ <b>الرابط الخاص بك</b>\n\n"
-            f"🔗 <code>{link}</code>\n\n"
+            f"▫️ <code>{link}</code>\n\n"
             "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
-        )
-    )
-
-    bot.send_message(
-        call.message.chat.id,
-        (
-            "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
-            "▫️ هنا يمكنك إرسال أي رسالة إلي , أنا مستعد لمواجهة الصراحة 😅\n\n"
-            "⬇️ ارسلها الى هنا ⬇️"
         ),
         reply_markup=types.InlineKeyboardMarkup([
             [types.InlineKeyboardButton(
-                "✉️ صارحني الآن",
-                url=link
+                "📤 شارك الرابط",
+                switch_inline_query=""
             )]
         ])
-    )
-
-    bot.send_message(
-        call.message.chat.id,
-        "👆 <b>حوّل هذه الرسالة (Forward) إلى أي مجموعة أو محادثة لمشاركتها!</b>"
     )
 
 

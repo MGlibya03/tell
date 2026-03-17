@@ -161,7 +161,7 @@ def send_owner_notification(sender, recipient_id, recipient_name: str,
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "📥 <b>المُستلِم:</b>\n"
         f"   👤 الاسم: <b>{recipient_name}</b>\n"
-        f"   📧 اليوزر: @{recipient_username}/n"
+        f"   📧 اليوزر: @{recipient_username}\n"
         f"   🆔 الآيدي: <code>{recipient_id}</code>\n"
         f"   🔗 <a href='tg://user?id={recipient_id}'>فتح المحادثة</a>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"

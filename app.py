@@ -27,6 +27,8 @@ USERS_FILE: Path = Path("users.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
+bot.delete_webhook()
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,

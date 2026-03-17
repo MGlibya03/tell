@@ -26,13 +26,15 @@ MESSAGES_LOG_FILE: Path = Path("messages_log.json")
 USERS_FILE: Path = Path("users.json")
 # ──────────────────────────────────────────
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
 )
 
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN غير موجود في Environment Variables")
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 user_states: Dict[int, dict] = {}
 
 # ─────────────── Flask Web Server ───────────────
@@ -40,7 +42,7 @@ web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
-    return "✅ البوت شغّال!"
+    return "✅ البوت شغّال!", 200
 
 @web_app.route("/health")
 def health():
@@ -48,7 +50,7 @@ def health():
 
 def run_web():
     port = int(os.getenv("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 # ─────────────── قاعدة بيانات المستخدمين ───────────────
@@ -218,6 +220,8 @@ def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 
+# ─────────────── أمر /start ───────────────
+
 @bot.message_handler(commands=["start"])
 def cmd_start(m: types.Message) -> None:
     user = m.from_user
@@ -360,6 +364,8 @@ def cmd_id(m: types.Message) -> None:
         bot.reply_to(m, f"🆔 معرّفك الشخصي: <code>{m.from_user.id}</code>")
 
 
+# ─────────────── أوامر المالك ───────────────
+
 @bot.message_handler(commands=["stats"])
 def cmd_stats(m: types.Message) -> None:
     if m.from_user.id != ADMIN_ID:
@@ -464,6 +470,8 @@ def cmd_users(m: types.Message) -> None:
     bot.reply_to(m, text)
 
 
+# ─────────────── استقبال الرسائل الخاصة ───────────────
+
 @bot.message_handler(func=lambda msg: msg.chat.type == "private", content_types=["text"])
 def private_handler(m: types.Message) -> None:
     user = m.from_user
@@ -544,6 +552,8 @@ def private_handler(m: types.Message) -> None:
         )
     )
 
+
+# ─────────────── معالجة الأزرار ───────────────
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("checksub_"))
 def check_sub_handler(call: types.CallbackQuery) -> None:
@@ -682,6 +692,8 @@ def cancel_handler(call: types.CallbackQuery) -> None:
     )
 
 
+# ─────────────── المشاركة (Inline Query) ───────────────
+
 @bot.inline_handler(func=lambda query: True)
 def inline_handler(query):
     user = query.from_user
@@ -710,12 +722,15 @@ def inline_handler(query):
     bot.answer_inline_query(query.id, [result], cache_time=0, is_personal=True)
 
 
-@bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo",
-                                                         "video", "sticker", "voice"])
+# ─────────────── محتوى غير مدعوم ───────────────
+
+@bot.message_handler(func=lambda _: True, content_types=["audio", "document", "photo", "video", "sticker", "voice"])
 def unsupported(m: types.Message) -> None:
     if m.chat.type == "private":
         bot.reply_to(m, "⚠️ يدعم البوت الرسائل النصّيّة فقط.")
 
+
+# ─────────────── التشغيل ───────────────
 
 if __name__ == "__main__":
     logging.info("🚀 @sarr7neBot is running…")

@@ -32,7 +32,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# حالات المستخدمين
 user_states: Dict[int, dict] = {}
 
 # ─────────────── Flask Web Server ───────────────
@@ -233,7 +232,6 @@ def cmd_start(m: types.Message) -> None:
         except ValueError:
             target_id = 0
 
-    # فحص اشتراك المُرسِل
     if not is_channel_member(user.id):
         bot.send_message(
             m.chat.id,
@@ -245,13 +243,11 @@ def cmd_start(m: types.Message) -> None:
         )
         return
 
-    # المستخدم ضغط على رابط شخص
     if target_id > 0:
         if target_id == user.id:
             bot.reply_to(m, "❌ لا يمكنك إرسال رسالة مجهولة لنفسك!")
             return
 
-        # فحص اشتراك المُستلِم
         if not is_channel_member(target_id):
             bot.send_message(
                 m.chat.id,
@@ -290,7 +286,6 @@ def cmd_start(m: types.Message) -> None:
         )
         return
 
-    # الصفحة الرئيسية
     full_name = user.first_name + (f" {user.last_name}" if user.last_name else "")
 
     bot.send_message(
@@ -318,23 +313,36 @@ def cmd_mylink(m: types.Message) -> None:
         return
 
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
-    
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton(
-        "📤 شارك الرابط",
-        switch_inline_query=""
-    ))
-    
+
     bot.send_message(
         m.chat.id,
         (
             "▪️ <b>الرابط الخاص بك</b>\n\n"
-            f"▫️ <code>{link}</code>\n\n"
+            f"🔗 <code>{link}</code>\n\n"
             "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
+        )
+    )
+
+    bot.send_message(
+        m.chat.id,
+        (
+            "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
+            "▫️ هنا يمكنك إرسال أي رسالة إلي , أنا مستعد لمواجهة الصراحة 😅\n\n"
+            "⬇️ ارسلها الى هنا ⬇️"
         ),
-        reply_markup=kb
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
+                "✉️ صارحني الآن",
+                url=link
+            )]
+        ])
+    )
+
+    bot.send_message(
+        m.chat.id,
+        "👆 <b>حوّل هذه الرسالة (Forward) إلى أي مجموعة أو محادثة لمشاركتها!</b>"
     )
 
 
@@ -480,7 +488,6 @@ def private_handler(m: types.Message) -> None:
     user = m.from_user
     save_user(user)
 
-    # فحص اشتراك المُرسِل
     if not is_channel_member(user.id):
         target_id = user_states.get(user.id, {}).get("target_id", 0)
         bot.reply_to(m, "⚠️ <b>يجب الاشتراك في القناة أولاً!</b>",
@@ -490,12 +497,10 @@ def private_handler(m: types.Message) -> None:
     state = user_states.get(user.id)
 
     if state and state.get("action") == "send_anon":
-        # ═══ إرسال رسالة مجهولة لمستخدم محدد ═══
         target_id = state["target_id"]
         target_name = state["target_name"]
         del user_states[user.id]
 
-        # فحص اشتراك المُستلِم
         if not is_channel_member(target_id):
             bot.reply_to(m, "❌ <b>المُستلِم غير مشترك في القناة!</b>")
             return
@@ -503,17 +508,14 @@ def private_handler(m: types.Message) -> None:
         target_data = get_user(target_id)
         target_username = target_data["username"] if target_data else "بدون"
 
-        # تسجيل + إشعار المالك
         log_entry = log_message(user, target_id, target_name, target_username, m.text)
         send_owner_notification(user, target_id, target_name, target_username, m.text, log_entry)
 
-        # توجيه الأصل للأدمن
         try:
             bot.forward_message(ADMIN_ID, m.chat.id, m.message_id)
         except Exception:
             logging.exception("تعذّر توجيه الرسالة للأدمن")
 
-        # إرسال الرسالة للمستلم فقط
         reply_kb = types.InlineKeyboardMarkup([
             [types.InlineKeyboardButton(
                 "↩️ رد برسالة مجهولة",
@@ -535,7 +537,6 @@ def private_handler(m: types.Message) -> None:
             bot.reply_to(m, "❌ تعذّر إرسال الرسالة! المستلم ربما لم يبدأ البوت.")
             return
 
-        # تأكيد الإرسال
         bot.reply_to(
             m,
             (
@@ -551,7 +552,6 @@ def private_handler(m: types.Message) -> None:
         )
         return
 
-    # ═══ رسالة بدون رابط ═══
     bot.reply_to(
         m,
         (
@@ -585,7 +585,6 @@ def check_sub_handler(call: types.CallbackQuery) -> None:
     bot.answer_callback_query(call.id, "✅ تم التحقّق!", show_alert=True)
 
     if target_id > 0:
-        # فحص اشتراك المستلم
         if not is_channel_member(target_id):
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
@@ -651,24 +650,38 @@ def get_link_handler(call: types.CallbackQuery) -> None:
         return
 
     link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
-    
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton(
-        "📤 شارك الرابط",
-        switch_inline_query=""
-    ))
-    
+
     bot.answer_callback_query(call.id)
+
     bot.send_message(
         call.message.chat.id,
         (
             "▪️ <b>الرابط الخاص بك</b>\n\n"
-            f"▫️ <code>{link}</code>\n\n"
+            f"🔗 <code>{link}</code>\n\n"
             "▫️ يمكنك نشر الرابط في مجموعات التليجرام أو بين "
             "أصدقائك أو في مواقع التواصل الاجتماعي.\n\n"
             "▪️ حانت لحظة الصراحة 💬"
+        )
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        (
+            "▪️ <b>صارحني</b> لتلقي النقد البنّاء بسرية تامة\n\n"
+            "▫️ هنا يمكنك إرسال أي رسالة إلي , أنا مستعد لمواجهة الصراحة 😅\n\n"
+            "⬇️ ارسلها الى هنا ⬇️"
         ),
-        reply_markup=kb
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton(
+                "✉️ صارحني الآن",
+                url=link
+            )]
+        ])
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        "👆 <b>حوّل هذه الرسالة (Forward) إلى أي مجموعة أو محادثة لمشاركتها!</b>"
     )
 
 

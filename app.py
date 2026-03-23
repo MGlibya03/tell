@@ -21,7 +21,7 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 ADMIN_ID: int = 1053838533
 TARGET_CHANNEL_ID: int = -1003747214322
 CHANNEL_USERNAME: str = "AurelianMind03"
-BOT_USERNAME: str = "sarr7neBot"
+BOT_USERNAME: str = "sara77abot"
 MESSAGES_LOG_FILE: Path = Path("messages_log.json")
 USERS_FILE: Path = Path("users.json")
 # ──────────────────────────────────────────

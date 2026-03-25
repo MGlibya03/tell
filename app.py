@@ -4,20 +4,20 @@
 from __future__ import annotations
 import os
 import json
-import logging
 import time
+import logging
+import threading
 from pathlib import Path
 from typing import Dict
 from datetime import datetime
 from flask import Flask
-import threading
 
 import telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
 
 # ─────────────── الإعدادات ───────────────
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID: int = 1053838533
 TARGET_CHANNEL_ID: int = -1003747214322
 CHANNEL_USERNAME: str = "AurelianMind03"
@@ -53,7 +53,7 @@ def run_web():
     web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
-# ─────────────── قاعدة بيانات المستخدمين ───────────────
+# ─────────────── أدوات ملفات المستخدمين ───────────────
 
 def load_users() -> dict:
     if USERS_FILE.exists():
@@ -84,8 +84,7 @@ def save_user(user) -> dict:
     return users[str(user.id)]
 
 def get_user(user_id: int) -> dict:
-    users = load_users()
-    return users.get(str(user_id))
+    return load_users().get(str(user_id))
 
 def get_users_count() -> int:
     return len(load_users())
@@ -344,7 +343,8 @@ def cmd_help(m: types.Message) -> None:
             "▪️ /start — القائمة الرئيسية\n"
             "▪️ /mylink — رابطك الخاص\n"
             "▪️ /help — المساعدة\n"
-            "▪️ /id — معرّفك\n\n"
+            "▪️ /id — معرّفك\n"
+            "▪️ /broadcast — رسالة جماعية (للأدمن فقط)\n\n"
             "<b>كيف يعمل؟</b>\n"
             "1️⃣ اشترك في القناة\n"
             "2️⃣ أرسل /start للحصول على رابطك\n"
@@ -377,6 +377,45 @@ def cmd_stats(m: types.Message) -> None:
         f"✉️ إجمالي الرسائل: <b>{get_total_messages()}</b>\n"
         "━━━━━━━━━━━━━━━━━"
     ))
+
+@bot.message_handler(commands=["broadcast"])
+def cmd_broadcast(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(m, "📢 الاستخدام:\n<code>/broadcast نص الرسالة</code>")
+        return
+
+    message_text = parts[1]
+    users = load_users()
+
+    if not users:
+        bot.reply_to(m, "📭 لا يوجد مستخدمون للإرسال إليهم.")
+        return
+
+    sent = 0
+    failed = 0
+
+    bot.reply_to(m, f"🚀 بدأ الإرسال إلى <b>{len(users)}</b> مستخدم...")
+
+    for user_id in users.keys():
+        try:
+            bot.send_message(int(user_id), message_text)
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    bot.send_message(
+        m.chat.id,
+        (
+            "✅ <b>انتهى الإرسال الجماعي</b>\n\n"
+            f"📨 تم الإرسال إلى: <b>{sent}</b>\n"
+            f"❌ فشل الإرسال إلى: <b>{failed}</b>"
+        )
+    )
 
 @bot.message_handler(commands=["logs"])
 def cmd_logs(m: types.Message) -> None:
@@ -733,9 +772,9 @@ def unsupported(m: types.Message) -> None:
 # ─────────────── التشغيل ───────────────
 
 if __name__ == "__main__":
-    logging.info("🚀 @sarr7neBot is running…")
-    logging.info(f"👑 المالك: {ADMIN_ID}")
-    logging.info(f"📢 القناة: @{CHANNEL_USERNAME}")
+    logging.info("🚀 @%s is running…", BOT_USERNAME)
+    logging.info("👑 المالك: %s", ADMIN_ID)
+    logging.info("📢 القناة: @%s", CHANNEL_USERNAME)
 
     try:
         bot.delete_webhook(drop_pending_updates=True)

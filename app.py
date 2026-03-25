@@ -344,7 +344,10 @@ def cmd_help(m: types.Message) -> None:
             "▪️ /mylink — رابطك الخاص\n"
             "▪️ /help — المساعدة\n"
             "▪️ /id — معرّفك\n"
-            "▪️ /broadcast — رسالة جماعية (للأدمن فقط)\n\n"
+            "▪️ /broadcast — رسالة جماعية نصية\n"
+            "▪️ /broadcast_photo — صورة جماعية بالرد على صورة\n"
+            "▪️ /broadcast_file — ملف جماعي بالرد على ملف\n"
+            "▪️ /broadcast_forward — توجيه جماعي بالرد على رسالة\n\n"
             "<b>كيف يعمل؟</b>\n"
             "1️⃣ اشترك في القناة\n"
             "2️⃣ أرسل /start للحصول على رابطك\n"
@@ -414,6 +417,145 @@ def cmd_broadcast(m: types.Message) -> None:
             "✅ <b>انتهى الإرسال الجماعي</b>\n\n"
             f"📨 تم الإرسال إلى: <b>{sent}</b>\n"
             f"❌ فشل الإرسال إلى: <b>{failed}</b>"
+        )
+    )
+
+@bot.message_handler(commands=["broadcast_photo"])
+def cmd_broadcast_photo(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        bot.reply_to(
+            m,
+            "🖼️ الاستخدام:\n"
+            "رد على صورة بالأمر:\n"
+            "<code>/broadcast_photo وصف اختياري</code>"
+        )
+        return
+
+    caption = ""
+    parts = m.text.split(maxsplit=1)
+    if len(parts) > 1:
+        caption = parts[1]
+
+    users = load_users()
+    if not users:
+        bot.reply_to(m, "📭 لا يوجد مستخدمون للإرسال إليهم.")
+        return
+
+    sent = 0
+    failed = 0
+    photo_file_id = m.reply_to_message.photo[-1].file_id
+
+    bot.reply_to(m, f"🚀 بدأ إرسال الصورة إلى <b>{len(users)}</b> مستخدم...")
+
+    for user_id in users.keys():
+        try:
+            bot.send_photo(int(user_id), photo_file_id, caption=caption)
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    bot.send_message(
+        m.chat.id,
+        (
+            "✅ <b>انتهى إرسال الصورة الجماعية</b>\n\n"
+            f"🖼️ تم الإرسال إلى: <b>{sent}</b>\n"
+            f"❌ فشل الإرسال إلى: <b>{failed}</b>"
+        )
+    )
+
+@bot.message_handler(commands=["broadcast_file"])
+def cmd_broadcast_file(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    if not m.reply_to_message or not m.reply_to_message.document:
+        bot.reply_to(
+            m,
+            "📎 الاستخدام:\n"
+            "رد على ملف بالأمر:\n"
+            "<code>/broadcast_file وصف اختياري</code>"
+        )
+        return
+
+    caption = ""
+    parts = m.text.split(maxsplit=1)
+    if len(parts) > 1:
+        caption = parts[1]
+
+    users = load_users()
+    if not users:
+        bot.reply_to(m, "📭 لا يوجد مستخدمون للإرسال إليهم.")
+        return
+
+    sent = 0
+    failed = 0
+    document_file_id = m.reply_to_message.document.file_id
+
+    bot.reply_to(m, f"🚀 بدأ إرسال الملف إلى <b>{len(users)}</b> مستخدم...")
+
+    for user_id in users.keys():
+        try:
+            bot.send_document(int(user_id), document_file_id, caption=caption)
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    bot.send_message(
+        m.chat.id,
+        (
+            "✅ <b>انتهى إرسال الملف الجماعي</b>\n\n"
+            f"📎 تم الإرسال إلى: <b>{sent}</b>\n"
+            f"❌ فشل الإرسال إلى: <b>{failed}</b>"
+        )
+    )
+
+@bot.message_handler(commands=["broadcast_forward"])
+def cmd_broadcast_forward(m: types.Message) -> None:
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    if not m.reply_to_message:
+        bot.reply_to(
+            m,
+            "↪️ الاستخدام:\n"
+            "رد على أي رسالة بالأمر:\n"
+            "<code>/broadcast_forward</code>"
+        )
+        return
+
+    users = load_users()
+    if not users:
+        bot.reply_to(m, "📭 لا يوجد مستخدمون للإرسال إليهم.")
+        return
+
+    sent = 0
+    failed = 0
+
+    bot.reply_to(m, f"🚀 بدأ التوجيه الجماعي إلى <b>{len(users)}</b> مستخدم...")
+
+    for user_id in users.keys():
+        try:
+            bot.forward_message(
+                int(user_id),
+                m.chat.id,
+                m.reply_to_message.message_id
+            )
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    bot.send_message(
+        m.chat.id,
+        (
+            "✅ <b>انتهى التوجيه الجماعي</b>\n\n"
+            f"↪️ تم التوجيه إلى: <b>{sent}</b>\n"
+            f"❌ فشل التوجيه إلى: <b>{failed}</b>"
         )
     )
 

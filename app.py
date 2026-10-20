@@ -3599,3 +3599,858 @@ def handle_economy_and_games_cmds(m: types.Message, text: str, u_data: dict, now
         return True
 
     return False
+# ══════════════════════════════════════════════════════════════════
+# 🚀 الموجه الرئيسي للرسائل النصية (في الخاص والمجموعات)
+# ══════════════════════════════════════════════════════════════════
+
+@bot.message_handler(content_types=["text"])
+def main_text_router(m: types.Message):
+    try:
+        _process_text(m)
+    except Exception as e:
+        logging.error("خطأ غير متوقع في معالجة الرسالة: %s", e)
+
+def _process_text(m: types.Message):
+    user = m.from_user
+    if not user:
+        return
+    text = (m.text or "").strip()
+    ntext = norm_ar(text)
+    chat_id = m.chat.id
+    is_group = m.chat.type in ("group", "supergroup")
+    b_name = get_bot_name()
+    b_name_norm = norm_ar(b_name)
+
+    u_data = ensure_user(user)
+    now = int(time.time())
+
+    # ─────────────── 1. المحادثة الخاصة ───────────────
+    if not is_group:
+        if user.id in pending_whispers:
+            w_info = pending_whispers.pop(user.id)
+            if now > w_info["expires"]:
+                bot.reply_to(m, "▽ : عذرا، انتهت صلاحية الهمسة")
+                return
+            with db_lock:
+                conn = get_db()
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO whispers (chat_id, sender_id, sender_name, target_id, target_name, text, timestamp) VALUES (?,?,?,?,?,?,?)",
+                    (w_info["chat_id"], user.id, u_data["name"], w_info["target_id"], w_info["target_name"], text, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                )
+                w_id = c.lastrowid
+                conn.commit()
+                conn.close()
+
+            if user.id != ADMIN_ID:
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"🕵️‍♂️ <b>همسة سرية جديدة #{w_id} :</b>\n"
+                        f"▽ : من ← {esc(u_data['name'])} (<code>{user.id}</code>)\n"
+                        f"▽ : إلى ← {esc(w_info['target_name'])} (<code>{w_info['target_id']}</code>)\n"
+                        f"▽ : النص ← <code>{esc(text)}</code>"
+                    )
+                except Exception:
+                    pass
+
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("• عرض الهمسة •", callback_data=f"whisper_{w_id}"))
+            group_msg_text = (
+                f"هذه همسة سرية لك ← <a href='tg://user?id={w_info['target_id']}'>{esc(w_info['target_name'])}</a>\n"
+                f"الهمسة من ← <a href='tg://user?id={user.id}'>{esc(u_data['name'])}</a>"
+            )
+            try:
+                bot.send_message(
+                    w_info["chat_id"],
+                    group_msg_text,
+                    reply_to_message_id=w_info["reply_id"] if w_info["reply_id"] else None,
+                    reply_markup=kb
+                )
+            except Exception:
+                bot.send_message(w_info["chat_id"], group_msg_text, reply_markup=kb)
+
+            bot.reply_to(m, "▽ : تم ارسالها بنجاح بالمجموعة")
+            return
+
+        if user.id == ADMIN_ID:
+            if _handle_dev_commands(m, text, u_data):
+                return
+
+        if handle_economy_and_games_cmds(m, text, u_data, now):
+            return
+
+        caption = (
+            f"▽ : أهلا بك في بوت {esc(b_name)} 🇱🇾\n"
+            f"------------------\n"
+            f"▽ : مدينتك الحالية ← {{ {esc(u_data['city'])} }}\n"
+            f"▽ : مصرفك الحالي ← {{ {esc(u_data['bank_name'])} }}\n"
+            f"▽ : فرع المصرف ← {{ {esc(u_data['bank_branch'])} }}\n"
+            f"------------------\n"
+            f"▽ : اضف البوت وارفعه مشرف في مجموعتك\n"
+            f"▽ : ارسل {{ تفعيل }} ليتم تفعيل المجموعه"
+        )
+        send_with_user_photo(
+            chat_id,
+            user.id,
+            caption,
+            reply_to_message_id=m.message_id,
+            reply_markup=get_private_start_kb(user.id)
+        )
+        return
+
+    # ─────────────── 2. المجموعات ───────────────
+    grp_data = ensure_group(m.chat)
+    user_rank = get_rank(chat_id, user.id)
+    locks = get_group_locks(chat_id)
+    settings = get_group_settings(chat_id)
+
+    if user_rank == 0:
+        del_msg = False
+        if locks.get("الكل") or locks.get("الدردشه"):
+            del_msg = True
+        elif (m.forward_from or m.forward_from_chat) and (locks.get("التوجيه") or locks.get("القنوات")):
+            del_msg = True
+        elif locks.get("الروابط") and re.search(r"(https?://|t\.me/|telegram\.me/|www\.)", text, re.I):
+            del_msg = True
+        elif (locks.get("اليوزر") or locks.get("التاك")) and "@" in text:
+            del_msg = True
+        elif locks.get("الشارحه") and "/" in text:
+            del_msg = True
+        elif locks.get("الكلايش") and len(text) > 400:
+            del_msg = True
+        elif locks.get("الانكليزيه") and re.search(r"[a-zA-Z]{4,}", text):
+            del_msg = True
+        elif locks.get("الفشار") and any(bw in ntext.split() for bw in BAD_WORDS):
+            del_msg = True
+
+        if del_msg:
+            try:
+                bot.delete_message(chat_id, m.message_id)
+                punish = grp_data.get("punishment", "بالتقييد")
+                if punish == "بالطرد":
+                    bot.ban_chat_member(chat_id, user.id)
+                    bot.unban_chat_member(chat_id, user.id)
+                elif punish == "بالكتم":
+                    bot.restrict_chat_member(chat_id, user.id, can_send_messages=False)
+            except Exception:
+                pass
+            return
+
+    if ntext == "لحق" and chat_id in active_airdrops:
+        bag_amount = active_airdrops.pop(chat_id)
+        update_user_field(user.id, cash=u_data["cash"] + bag_amount)
+        bot.reply_to(
+            m,
+            f"🏃‍♂️💨 <b>كفو يا ذيب ({esc(u_data['name'])})!</b>\n"
+            f"▽ : سبقت الكل ولحقت على حقيبة الفلوس في الشارع!\n"
+            f"▽ : ربحت <b>{bag_amount} د.ل</b> كاش في جيبك 💵🔥"
+        )
+        return
+
+    if chat_id in active_games:
+        game = active_games[chat_id]
+        if norm_ar(text) == norm_ar(game["answer"]):
+            reward = game["reward"]
+            del active_games[chat_id]
+            update_user_field(user.id, cash=u_data["cash"] + reward, points=u_data["points"] + 5)
+            bot.reply_to(
+                m,
+                f"🎉 <b>إجابة صحيحة وسريعة يا {esc(u_data['name'])}!</b>\n"
+                f"▽ : ربحت <b>{reward} د.ل</b> كاش + 5 نقاط تفاعل ⭐"
+            )
+            return
+
+    if settings.get("الالعاب", True):
+        group_msg_counter[chat_id] = group_msg_counter.get(chat_id, 0) + 1
+        if group_msg_counter[chat_id] >= 40 and chat_id not in active_airdrops:
+            group_msg_counter[chat_id] = 0
+            bag_val = random.choice([1000, 1500, 2000, 2500])
+            active_airdrops[chat_id] = bag_val
+            try:
+                bot.send_message(
+                    chat_id,
+                    f"🚨💼 <b>حدث طارئ في الشارع العام!</b>\n"
+                    f"------------------\n"
+                    f"▽ : طاحت حقيبة فلوس فيها <b>{bag_val} د.ل</b> كاش!\n"
+                    f"▽ : أول شخص يكتب كلمة ( <code>لحق</code> ) يأخذها كلها فوراً! 🏃‍♂️💨"
+                )
+            except Exception:
+                pass
+
+    if (
+        settings.get("الرادار", True)
+        and u_data["car"] != "بدون سيارة"
+        and u_data["car"] in CARS
+        and now - last_radar_time.get(user.id, 0) > 1800
+        and random.randint(1, 100) <= 3
+    ):
+        last_radar_time[user.id] = now
+        car_speed = CARS[u_data["car"]]["speed"]
+        fine = int(car_speed * 1.2)
+        new_cond = max(20, u_data["car_cond"] - 5)
+        if u_data["cash"] >= fine:
+            update_user_field(user.id, cash=u_data["cash"] - fine, car_cond=new_cond)
+            bot.reply_to(
+                m,
+                f"🚓📸 <b>رادار الطريق الساحلي في {esc(u_data['city'])} صوّرك!</b>\n"
+                f"▽ : كنت تجري بسيارتك (<b>{esc(u_data['car'])}</b>) بسرعة <b>{car_speed} كم/س</b>!\n"
+                f"▽ : تم خصم مخالفة مرورية بقيمة <b>{fine} د.ل</b> من كاش جيبك 💸"
+            )
+        elif u_data["bank_balance"] >= fine:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - fine, car_cond=new_cond)
+            bot.reply_to(
+                m,
+                f"🚓📸 <b>رادار الطريق الساحلي في {esc(u_data['city'])} صوّرك!</b>\n"
+                f"▽ : كنت تجري بسيارتك (<b>{esc(u_data['car'])}</b>) بسرعة <b>{car_speed} كم/س</b>!\n"
+                f"▽ : تم خصم مخالفة مرورية بقيمة <b>{fine} د.ل</b> من حسابك المصرفي 🏦"
+            )
+
+    if ntext in ("بوت", "يا بوت", "يابوت", b_name_norm, f"يا {b_name_norm}", f"يا{b_name_norm}"):
+        bot.reply_to(m, random.choice(BOT_CALL_REPLIES).format(name=esc(b_name)))
+        return
+
+    for prefix in (b_name + " ", b_name_norm + " ", "بوت "):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            ntext = norm_ar(text)
+            break
+
+    shortcuts = get_group_json(chat_id, "shortcuts", {})
+    if text in shortcuts:
+        text = shortcuts[text]
+        ntext = norm_ar(text)
+    elif ntext == "ا":
+        text = "ايدي"
+    elif ntext in ("ص", "جمال صورتي"):
+        text = "صورتي"
+
+    if settings.get("الردود", True):
+        custom_replies = get_group_json(chat_id, "replies", {})
+        if text in custom_replies:
+            bot.reply_to(m, custom_replies[text])
+            return
+
+    if user.id == ADMIN_ID:
+        if _handle_dev_commands(m, text, u_data):
+            return
+
+    if handle_admin_and_info_cmds(m, text, u_data, grp_data, user_rank, locks, now):
+        return
+
+    handle_economy_and_games_cmds(m, text, u_data, now)
+
+
+# ══════════════════════════════════════════════════════════════════
+# ⚡ أوامر المطور الأساسي (MG) السرية (تعمل بالكتابة السريعة ه = ة في القروب والخاص)
+# ══════════════════════════════════════════════════════════════════
+
+def _handle_dev_commands(m: types.Message, text: str, u_data: dict) -> bool:
+    if m.from_user.id != ADMIN_ID:
+        return False
+
+    ntext = norm_ar(text)
+
+    if ntext in ("م المطور", "اوامر المطور"):
+        bot.reply_to(m, render_menu("menu_dev"), reply_markup=get_commands_kb(ADMIN_ID))
+        return True
+
+    if ntext.startswith("تغيير اسم البوت "):
+        new_n = text.split(maxsplit=3)[3].strip()
+        if new_n:
+            set_bot_name(new_n)
+            bot.reply_to(m, f"▽ : ⚡ تم تغيير اسم البوت إلى (<b>{esc(new_n)}</b>) بنجاح!")
+        return True
+
+    if ntext.startswith("اضف فلوس "):
+        t_u = resolve_target_user(m, text)
+        nums = [int(x) for x in ntext.split() if x.isdigit() and int(x) != (t_u["user_id"] if t_u else 0)]
+        if t_u and nums:
+            amt = nums[-1]
+            update_user_field(t_u["user_id"], bank_balance=t_u["bank_balance"] + amt)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم إضافة <b>{amt} د.ل</b> لرصيد <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("خصم فلوس "):
+        t_u = resolve_target_user(m, text)
+        nums = [int(x) for x in ntext.split() if x.isdigit() and int(x) != (t_u["user_id"] if t_u else 0)]
+        if t_u and nums:
+            amt = nums[-1]
+            new_b = max(0, t_u["bank_balance"] - amt)
+            new_c = max(0, t_u["cash"] - max(0, amt - t_u["bank_balance"]))
+            update_user_field(t_u["user_id"], bank_balance=new_b, cash=new_c)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم خصم <b>{amt} د.ل</b> من <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("تصفير فلوسه"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            update_user_field(t_u["user_id"], cash=0, home_cash=0, bank_balance=0)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم تصفير كاش ومصرف وخزنة <b>{esc(t_u['name'])}</b> بالكامل!")
+            return True
+
+    if ntext.startswith("منح سياره"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            car_name = find_car_name(text) or "Mercedes-AMG G63 V8 Biturbo 2025"
+            update_user_field(t_u["user_id"], car=car_name, car_cond=100)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم منح السيارة (<b>{car_name}</b>) إلى <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("سحب سياره"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            update_user_field(t_u["user_id"], car="بدون سيارة")
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم سحب السيارة من <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("منح عقار"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            h_name = match_dict_key(HOUSES, text) or "قصر رئاسي محصن في فينيسيا"
+            update_user_field(t_u["user_id"], house=h_name)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم منح العقار (<b>{h_name}</b>) إلى <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("سحب عقار"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            update_user_field(t_u["user_id"], house="بدون سكن", home_cash=0)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم سحب العقار من <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith(("منح متجر", "منح مشروع", "منح صيدليه")):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            b_type = match_dict_key(BUSINESS_CATALOG, text) or "مول تجاري"
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO businesses (owner_id, owner_name, biz_type, custom_name, city, stock, vault, security, marketing, is_open) VALUES (?,?,?,?,?,100,0,80,3,1)",
+                    (t_u["user_id"], t_u["name"], b_type, f"{b_type} {t_u['name']}", t_u["city"])
+                )
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم منح مشروع (<b>{b_type}</b>) مجهز بالكامل إلى <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith(("سحب متجر", "سحب مشروع", "سحب صيدليه")):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            with db_lock:
+                conn = get_db()
+                conn.execute("DELETE FROM businesses WHERE owner_id = ?", (t_u["user_id"],))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم سحب وإغلاق مشاريع <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("منح مصرف"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            b_custom = f"مصرف {t_u['name']} الدولي"
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT OR REPLACE INTO custom_banks (owner_id, owner_name, bank_name, fee_pct, security, vault) VALUES (?,?,?,1.5,85,250000)",
+                    (t_u["user_id"], t_u["name"], b_custom)
+                )
+                conn.commit()
+                conn.close()
+            update_user_field(t_u["user_id"], bank_name=b_custom)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم منح مصرف خاص « <b>{esc(b_custom)}</b> » إلى <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith("سحب مصرف"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            with db_lock:
+                conn = get_db()
+                conn.execute("DELETE FROM custom_banks WHERE owner_id = ?", (t_u["user_id"],))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم سحب المصرف الخاص من <b>{esc(t_u['name'])}</b>!")
+            return True
+
+    if ntext.startswith(("تعيين مهنه", "تعيين وظيفه")):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            chosen_job = match_dict_key(JOBS, text) or "مبرمج"
+            update_user_field(t_u["user_id"], job=chosen_job, job_level=4, job_xp=60)
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم تعيين <b>{esc(t_u['name'])}</b> في مهنة (<b>{chosen_job} - الدرجة الرابعة العليا</b>)!")
+            return True
+
+    if ntext.startswith("فصل من العمل"):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            update_user_field(t_u["user_id"], job="عاطل", job_level=1, job_xp=0)
+            with db_lock:
+                conn = get_db()
+                conn.execute("DELETE FROM business_staff WHERE user_id = ?", (t_u["user_id"],))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ⚡ أمر المطور MG: تم فصل <b>{esc(t_u['name'])}</b> من وظيفته ومن جميع المتاجر!")
+            return True
+
+    if ntext.startswith(("اطلاق سراح", "عفو")):
+        t_u = resolve_target_user(m, text)
+        if t_u:
+            update_user_field(t_u["user_id"], jail_until=0, wanted=0)
+            bot.reply_to(m, f"▽ : ⚡ عفو سيادي من المطور MG! تم إطلاق سراح <b>{esc(t_u['name'])}</b> فوراً.")
+            return True
+
+    if ntext.startswith("صنع اكشطها "):
+        parts = text.split()
+        if len(parts) == 4 and parts[3].isdigit():
+            code, amt = parts[2].upper(), int(parts[3])
+            with db_lock:
+                conn = get_db()
+                conn.execute("INSERT OR REPLACE INTO scratch_cards (code, amount, claimed_by) VALUES (?,?,0)", (code, amt))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ⚡ تم صنع كرت اكشطها!\n▽ : الكود ← <code>{esc(code)}</code> | القيمة ← <b>{amt} د.ل</b>")
+            return True
+
+    if ntext == "قائمه اكشطها":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT * FROM scratch_cards WHERE claimed_by = 0").fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : لا توجد كروت غير مستخدمة حالياً.")
+        else:
+            txt = "▽ : 🎫 كروت اكشطها المتاحة :\n------------------\n"
+            for r in rows:
+                txt += f"▽ : <code>{esc(r['code'])}</code> ~ {r['amount']} د.ل\n"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext == "الهمسات":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT * FROM whispers ORDER BY id DESC LIMIT 15").fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : لا توجد همسات مسجلة بعد.")
+        else:
+            txt = "🕵️‍♂️ سجل آخر 15 همسة سرية (خاص بالمطور MG) :\n------------------\n"
+            for r in rows:
+                txt += f"#{r['id']} | <b>{esc(r['sender_name'])}</b> ⬅️ <b>{esc(r['target_name'])}</b>:\n  └ <code>{esc(r['text'])}</code>\n"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext == "الاحصائيات":
+        with db_lock:
+            conn = get_db()
+            u_cnt = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+            g_cnt = conn.execute("SELECT COUNT(*) as c FROM groups").fetchone()["c"]
+            b_cnt = conn.execute("SELECT COUNT(*) as c FROM businesses").fetchone()["c"]
+            conn.close()
+        bot.reply_to(
+            m,
+            f"📊 إحصائيات إمبراطورية أركان (خاص بالمطور MG) :\n"
+            f"------------------\n"
+            f"▽ : عدد المواطنين ← <b>{u_cnt}</b>\n"
+            f"▽ : عدد المجموعات ← <b>{g_cnt}</b>\n"
+            f"▽ : عدد المتاجر والشركات ← <b>{b_cnt}</b>"
+        )
+        return True
+
+    if ntext == "نسخه احتياطيه" and DB_FILE.exists():
+        with open(DB_FILE, "rb") as f:
+            bot.send_document(ADMIN_ID, f, caption="📦 نسخة احتياطية لقاعدة بيانات إمبراطورية أركان")
+        return True
+
+    if ntext == "استعاده" and m.reply_to_message and m.reply_to_message.document:
+        try:
+            fi = bot.get_file(m.reply_to_message.document.file_id)
+            dw = bot.download_file(fi.file_path)
+            with db_lock:
+                with open(DB_FILE, "wb") as f:
+                    f.write(dw)
+            init_db()
+            bot.reply_to(m, "▽ : ✅ تمت استعادة قاعدة البيانات بنجاح!")
+        except Exception as e:
+            bot.reply_to(m, f"▽ : ❌ خطأ: {e}")
+        return True
+
+    if ntext.startswith("اذاعه "):
+        b_msg = text.split(maxsplit=1)[1].strip()
+        with db_lock:
+            conn = get_db()
+            g_rows = conn.execute("SELECT chat_id FROM groups").fetchall()
+            conn.close()
+        sent = 0
+        for r in g_rows:
+            try:
+                bot.send_message(r["chat_id"], f"📢 <b>إذاعة رسمية من إدارة البوت :</b>\n------------------\n{esc(b_msg)}")
+                sent += 1
+            except Exception:
+                pass
+        bot.reply_to(m, f"▽ : ✅ تم إرسال الإذاعة إلى <b>{sent}</b> مجموعة!")
+        return True
+
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🔘 معالج الأزرار الشامل (استجابة فورية + ثبات الشاشة الرئيسية في القروب)
+# ══════════════════════════════════════════════════════════════════
+
+@bot.callback_query_handler(func=lambda c: True)
+def on_callback(call: types.CallbackQuery):
+    try:
+        data = call.data or ""
+        user = call.from_user
+        chat_id = call.message.chat.id
+        b_name = get_bot_name()
+
+        if data == "check_sub":
+            if is_channel_member(user.id):
+                bot.answer_callback_query(call.id, "✅ تم التحقق من اشتراكك بنجاح!", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, f"❌ اشترك في القناة @{CHANNEL_USERNAME} أولاً!", show_alert=True)
+            return
+
+        # حماية ملكية الأزرار (لا أحد يستطيع الضغط على أزرار غيره!)
+        if ":" in data:
+            parts = data.split(":")
+            action = parts[0]
+            owner_id = int(parts[1]) if parts[1].isdigit() else 0
+            if owner_id != 0 and user.id != owner_id and user.id != ADMIN_ID:
+                bot.answer_callback_query(
+                    call.id,
+                    "🚫 هذه القائمة خاصة بصاحبها فقط! اكتب (الاوامر) لفتح قائمتك الخاصة.",
+                    show_alert=True
+                )
+                return
+        else:
+            action = data
+            owner_id = user.id
+
+        # 1. عند الضغط على م1 - م9 أو الألعاب أو م المطور:
+        if action in POPUP_ALERT_MENUS:
+            if action == "menu_dev" and user.id != ADMIN_ID:
+                bot.answer_callback_query(call.id, "🚫 هذا القسم سري وخاص بالمطور الأساسي (MG) فقط!", show_alert=True)
+                return
+            bot.answer_callback_query(call.id, POPUP_ALERT_MENUS[action][:195], show_alert=True)
+            if call.message.chat.type == "private":
+                kb = types.InlineKeyboardMarkup()
+                kb.add(types.InlineKeyboardButton("🔙 رجوع للأوامر الرئيسية", callback_data=f"m_main:{owner_id}"))
+                bot.edit_message_text(render_menu(action), chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb)
+            else:
+                try:
+                    bot.send_message(user.id, render_menu(action))
+                except Exception:
+                    pass
+            return
+
+        if action == "m_main":
+            bot.edit_message_text(render_menu("main"), chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_commands_kb(owner_id))
+            return
+
+        if action == "pm_c":
+            bot.answer_callback_query(call.id, POPUP_ALERT_MENUS["menu_8"][:195], show_alert=True)
+            if call.message.chat.type == "private":
+                bot.send_message(chat_id, render_menu("menu_8"))
+            return
+
+        # 2. اختيار المدينة وتحديد المصرف والفرع والوظيفة والمشروع بالأزرار السريعة
+        if action == "pc_m":
+            bot.send_message(chat_id, "▽ : اختر مدينتك في ليبيا :", reply_markup=build_city_kb(user.id))
+            bot.answer_callback_query(call.id)
+            return
+
+        if action == "sc":
+            c_idx = int(data.split(":")[2])
+            if 0 <= c_idx < len(CITY_LIST):
+                chosen_city = CITY_LIST[c_idx][0]
+                update_user_field(user.id, city=chosen_city)
+                bot.answer_callback_query(call.id, f"✅ تم تسجيل مدينتك: ({chosen_city}) بنجاح!", show_alert=True)
+            return
+
+        if action == "pb_m":
+            bot.send_message(chat_id, "▽ : اختر المصرف لفتح أو نقل حسابك إليه :", reply_markup=build_banks_kb(user.id))
+            bot.answer_callback_query(call.id)
+            return
+
+        if action == "sb":
+            _, _, b_kind, b_id_str = data.split(":")
+            if b_kind == "o":
+                b_idx = int(b_id_str)
+                chosen_bank = BANK_LIST[b_idx][0]
+                default_br = BANK_LIST[b_idx][3][0]
+                update_user_field(user.id, bank_name=chosen_bank, bank_branch=default_br)
+                bot.answer_callback_query(call.id, f"🏦 تم فتح/نقل حسابك في ({chosen_bank}) بنجاح! اختر الفرع الآن.", show_alert=True)
+                bot.edit_message_text(
+                    f"▽ : ✅ تم تفعيل حسابك في <b>{esc(chosen_bank)}</b>\n▽ : اختر الفرع المصرفي المفضل لديك :",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=build_branches_kb(user.id, b_idx)
+                )
+            else:
+                cb_id = int(b_id_str)
+                with db_lock:
+                    conn = get_db()
+                    cb = conn.execute("SELECT bank_name FROM custom_banks WHERE id = ?", (cb_id,)).fetchone()
+                    conn.close()
+                if cb:
+                    chosen_bank = cb["bank_name"]
+                    update_user_field(user.id, bank_name=chosen_bank, bank_branch="الفرع الرئيسي")
+                    bot.answer_callback_query(call.id, f"🏦 تم فتح حسابك في المصرف الخاص ({chosen_bank})!", show_alert=True)
+                    bot.edit_message_text(
+                        f"▽ : ✅ تم تفعيل حسابك في المصرف الخاص <b>{esc(chosen_bank)}</b> بنجاح!",
+                        chat_id=chat_id,
+                        message_id=call.message.message_id,
+                        reply_markup=build_bank_secret_kb(user.id)
+                    )
+            return
+
+        if action == "sbr":
+            _, _, b_idx_s, br_idx_s = data.split(":")
+            b_idx, br_idx = int(b_idx_s), int(br_idx_s)
+            chosen_br = BANK_LIST[b_idx][3][br_idx]
+            update_user_field(user.id, bank_branch=chosen_br)
+            bot.answer_callback_query(call.id, f"✅ تم اعتماد فرعك المصرفي: ({chosen_br})!", show_alert=True)
+            bot.edit_message_text(
+                f"▽ : ✅ اكتمل إعداد حسابك المصرفي بنجاح!\n"
+                f"▽ : المصرف ← <b>{esc(BANK_LIST[b_idx][0])}</b>\n"
+                f"▽ : الفرع المعتمد ← <b>{esc(chosen_br)}</b>\n"
+                f"▽ : اكتب <code>الوظائف</code> ثم <code>شغل</code> لكسب المال!",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=build_bank_secret_kb(user.id)
+            )
+            return
+
+        # اختيار الوظيفة بالزر المباشر
+        if action == "sj":
+            j_idx = int(data.split(":")[2])
+            if 0 <= j_idx < len(JOB_LIST):
+                chosen_job = JOB_LIST[j_idx]
+                update_user_field(user.id, job=chosen_job, job_level=1, job_xp=0)
+                lvl_info = JOBS[chosen_job]["levels"][1]
+                bot.answer_callback_query(call.id, f"💼 مبروك! تم تعيينك في مهنة ({chosen_job})!", show_alert=True)
+                bot.edit_message_text(
+                    f"▽ : 🎉 تم تعيينك رسمياً في مهنة <b>{esc(chosen_job)}</b>!\n"
+                    f"▽ : الدرجة الأولى ← <b>{esc(lvl_info['title'])}</b> (الراتب: {lvl_info['salary']} د.ل)\n"
+                    f"▽ : اكتب الآن <code>شغل</code> لاستلام راتبك، واكتب <code>وظيفتي</code> أو <code>ترقيه</code> لمتابعة درجتك!",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id
+                )
+            return
+
+        # فتح مشروع أو صيدلية أو متجر عطور بالزر المباشر
+        if action == "obiz":
+            b_idx = int(data.split(":")[2])
+            if 0 <= b_idx < len(BIZ_KEYS_LIST):
+                b_type = BIZ_KEYS_LIST[b_idx]
+                cost = BUSINESS_CATALOG[b_type]["price"]
+                u = ensure_user(user)
+                if u["bank_balance"] >= cost:
+                    update_user_field(user.id, bank_balance=u["bank_balance"] - cost)
+                elif u["cash"] >= cost:
+                    update_user_field(user.id, cash=u["cash"] - cost)
+                else:
+                    bot.answer_callback_query(call.id, f"❌ تحتاج {cost} د.ل لافتتاح ({b_type})!", show_alert=True)
+                    return
+                c_name = f"{b_type} {u['name']}"
+                with db_lock:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO businesses (owner_id, owner_name, biz_type, custom_name, city, stock, vault, security, marketing, is_open) VALUES (?,?,?,?,?,20,0,20,1,1)",
+                        (user.id, u["name"], b_type, c_name, u["city"])
+                    )
+                    conn.commit()
+                    conn.close()
+                bot.answer_callback_query(call.id, f"🎉 مبروك افتتاح ({c_name})!", show_alert=True)
+                bot.edit_message_text(
+                    f"🏢🎉 <b>تم افتتاح مشروعك بنجاح!</b>\n"
+                    f"------------------\n"
+                    f"▽ : المشروع ← « <b>{esc(c_name)}</b> »\n"
+                    f"▽ : مخزون البداية ← <b>20 وحدة مجانية</b>\n"
+                    f"▽ : اكتب <code>متجري</code> أو <code>صيدليتي</code> لإدارته!",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id
+                )
+            return
+
+        # 3. لوحة القفل والفتح والإعدادات
+        if action == "locks_p":
+            if get_rank(chat_id, user.id) < 2:
+                bot.answer_callback_query(call.id, "❌ لوحة الحماية للادمنية فما فوق فقط!", show_alert=True)
+                return
+            bot.edit_message_text(f"▽ : لوحة القفل والفتح لبوت ({esc(b_name)}) :", chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_locks_kb(chat_id, owner_id))
+            return
+
+        if action == "tl":
+            if get_rank(chat_id, user.id) < 2:
+                bot.answer_callback_query(call.id, "❌ للادمنية فقط!", show_alert=True)
+                return
+            l_idx = int(data.split(":")[2])
+            lk = LOCK_LIST[l_idx][0]
+            st = not get_group_locks(chat_id).get(lk, False)
+            set_group_lock(chat_id, lk, st)
+            bot.answer_callback_query(call.id, f"▽ : تم {'قفل 🔒' if st else 'فتح 🔓'} {lk}")
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_locks_kb(chat_id, owner_id))
+            return
+
+        if action == "sets_p":
+            if get_rank(chat_id, user.id) < 3:
+                bot.answer_callback_query(call.id, "❌ لوحة الإعدادات للمدراء فما فوق فقط!", show_alert=True)
+                return
+            bot.edit_message_text(f"▽ : لوحة التفعيل والتعطيل لبوت ({esc(b_name)}) :", chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_settings_kb(chat_id, owner_id))
+            return
+
+        if action == "ts":
+            if get_rank(chat_id, user.id) < 3:
+                bot.answer_callback_query(call.id, "❌ للمدراء فقط!", show_alert=True)
+                return
+            s_idx = int(data.split(":")[2])
+            sk = SETTING_LIST[s_idx][0]
+            st = not get_group_settings(chat_id).get(sk, True)
+            set_group_setting(chat_id, sk, st)
+            bot.answer_callback_query(call.id, f"▽ : تم {'تفعيل ✅' if st else 'تعطيل ❌'} {sk}")
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_settings_kb(chat_id, owner_id))
+            return
+
+        # 4. كشف رصيد المصرف السري لصاحب الحساب فقط!
+        if data.startswith("sbank_"):
+            target_owner = int(data.split("_")[1])
+            if user.id not in (target_owner, ADMIN_ID):
+                bot.answer_callback_query(call.id, "🚫 هذا الحساب المصرفي سري وخاص بصاحبه فقط!", show_alert=True)
+                return
+            owner = get_user_by_id(target_owner)
+            if not owner:
+                return
+            u_stk = json.loads(owner.get("stocks") or "{}")
+            stk_summary = "، ".join([f"{k}: {v}" for k, v in u_stk.items() if v > 0]) or "لا توجد"
+            secret_msg = (
+                f"🏦 كشف الخزنة المصرفية السري :\n"
+                f"🏛️ المصرف : {owner['bank_name']}\n"
+                f"💳 رصيد المصرف : {owner['bank_balance']} د.ل\n"
+                f"🏠 كاش المنزل : {owner['home_cash']} د.ل\n"
+                f"💵 كاش الجيب : {owner['cash']} د.ل\n"
+                f"📈 الأسهم : {stk_summary}"
+            )
+            bot.answer_callback_query(call.id, secret_msg[:195], show_alert=True)
+            return
+
+        if data.startswith("dbank_"):
+            target_owner = int(data.split("_")[1])
+            if user.id != target_owner:
+                bot.answer_callback_query(call.id, "🚫 هذا الزر خاص بصاحب الحساب فقط!", show_alert=True)
+                return
+            owner = get_user_by_id(target_owner)
+            if not owner:
+                return
+            try:
+                bot.send_message(
+                    user.id,
+                    f"🏦 <b>التقرير المالي السري — {esc(owner['bank_name'])}</b>\n"
+                    f"------------------\n"
+                    f"▽ : الفرع ← <b>{esc(owner['bank_branch'])}</b>\n"
+                    f"▽ : رصيد المصرف السري ← <b>{owner['bank_balance']} د.ل</b> 🔒\n"
+                    f"▽ : كاش المنزل ← <b>{owner['home_cash']} د.ل</b> 🏠\n"
+                    f"▽ : كاش الجيب ← <b>{owner['cash']} د.ل</b> 💵\n"
+                    f"▽ : العقار ← <b>{esc(owner['house'])}</b>\n"
+                    f"▽ : السيارة ← <b>{esc(owner['car'])}</b>"
+                )
+                bot.answer_callback_query(call.id, "✅ تم إرسال التقرير السري إلى خاصك!", show_alert=True)
+            except Exception:
+                bot.answer_callback_query(call.id, "⚠️ افتح محادثة البوت في الخاص واضغط Start أولاً!", show_alert=True)
+            return
+
+        # 5. الهمسة السرية والتحديات
+        if data.startswith("whisper_"):
+            w_id = int(data.split("_")[1])
+            with db_lock:
+                conn = get_db()
+                row = conn.execute("SELECT * FROM whispers WHERE id = ?", (w_id,)).fetchone()
+                conn.close()
+            if not row:
+                bot.answer_callback_query(call.id, "▽ : هذه الهمسة غير موجودة!", show_alert=True)
+                return
+            if user.id in (row["sender_id"], row["target_id"], ADMIN_ID):
+                bot.answer_callback_query(call.id, f"🔒 همسة سرية:\n\n{row['text']}"[:195], show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, "🔒 هذه الهمسة سرية وليست لك!", show_alert=True)
+            return
+
+        if data.startswith(("duel_acc_", "duel_rej_")):
+            duel_id = data.split("_", 2)[2]
+            duel = active_duels.get(duel_id)
+            if not duel:
+                bot.answer_callback_query(call.id, "انتهى هذا التحدي!", show_alert=True)
+                return
+            if user.id != duel["p2"]:
+                bot.answer_callback_query(call.id, "🚫 هذا القرار خاص بالشخص المتحدى فقط!", show_alert=True)
+                return
+            del active_duels[duel_id]
+            if data.startswith("duel_rej_"):
+                bot.edit_message_text(f"🏳️ انسحب <b>{esc(duel['p2_name'])}</b> من التحدي!", chat_id=chat_id, message_id=call.message.message_id)
+                return
+            p1_u = get_user_by_id(duel["p1"])
+            p2_u = get_user_by_id(duel["p2"])
+            bet = duel["bet"]
+            if not p1_u or not p2_u or p1_u["cash"] < bet or p2_u["cash"] < bet:
+                bot.edit_message_text("❌ أحد الطرفين لم يعد يملك مبلغ الرهان كاش!", chat_id=chat_id, message_id=call.message.message_id)
+                return
+            if random.choice([True, False]):
+                update_user_field(p1_u["user_id"], cash=p1_u["cash"] + bet)
+                update_user_field(p2_u["user_id"], cash=p2_u["cash"] - bet)
+                w_n, l_n = p1_u["name"], p2_u["name"]
+            else:
+                update_user_field(p2_u["user_id"], cash=p2_u["cash"] + bet)
+                update_user_field(p1_u["user_id"], cash=p1_u["cash"] - bet)
+                w_n, l_n = p2_u["name"], p1_u["name"]
+            bot.edit_message_text(
+                f"⚔️🔥 فاز البطل <b>{esc(w_n)}</b> على <b>{esc(l_n)}</b> وربح <b>{bet} د.ل</b> كاش!",
+                chat_id=chat_id,
+                message_id=call.message.message_id
+            )
+            return
+
+    except Exception as e:
+        logging.error("خطأ في معالجة الزر: %s", e)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🚀 نقطة التشغيل الرئيسية (مع منع تعارض 409)
+# ══════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    try:
+        me = bot.get_me()
+        if me.username:
+            BOT_USERNAME = me.username
+        logging.info("تم الاتصال بالبوت بنجاح: @%s", BOT_USERNAME)
+    except Exception as e:
+        logging.warning("تعذر جلب يوزر البوت تلقائياً: %s", e)
+
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(1)
+    except Exception:
+        pass
+
+    threading.Thread(target=run_web, daemon=True).start()
+
+    while True:
+        try:
+            bot.infinity_polling(
+                timeout=20,
+                long_polling_timeout=20,
+                skip_pending=True,
+                allowed_updates=["message", "edited_message", "callback_query", "chat_member"]
+            )
+        except ApiTelegramException as api_err:
+            if api_err.error_code == 409:
+                logging.warning("تعارض 409 مؤقت.. الانتظار 5 ثوانٍ...")
+                time.sleep(5)
+            else:
+                logging.error("خطأ تيليجرام: %s", api_err)
+                time.sleep(3)
+        except Exception as err:
+            logging.error("خطأ اتصال عام: %s", err)
+            time.sleep(3)

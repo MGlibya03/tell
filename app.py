@@ -1057,3 +1057,1590 @@ POPUP_ALERT_MENUS = {
     "menu_games": "▽ الالعاب والمسابقات (للجميع):\nاسئله ~ لغز ~ عواصم ~ فكك\nعكس ~ معاني ~ امثله ~ رياضيات\nحجره ~ ورقه ~ مقص ~ تحدي + المبلغ\nحظ ~ مضاربه ~ استثمار ~ اكشط",
     "menu_dev": "⚡ لوحة المطور MG:\nاضف فلوس ~ خصم فلوس ~ تصفير فلوسه\nمنح/سحب (سياره، عقار، متجر، مصرف)\nتعيين مهنه ~ فصل من العمل ~ عفو\nالهمسات ~ الاحصائيات ~ اذاعه"
 }
+# ==================== بداية القسم الثالث ====================
+
+def esc(text: str) -> str:
+    return html.escape(str(text or ""))
+
+def send_with_user_photo(chat_id: int, user_id: int, caption: str, reply_to_message_id: int = None, reply_markup=None):
+    try:
+        photos = bot.get_user_profile_photos(user_id, limit=1)
+        if photos and photos.total_count > 0:
+            file_id = photos.photos[0][-1].file_id
+            bot.send_photo(chat_id, file_id, caption=caption, reply_to_message_id=reply_to_message_id, reply_markup=reply_markup)
+            return
+    except Exception:
+        pass
+    bot.send_message(chat_id, caption, reply_to_message_id=reply_to_message_id, reply_markup=reply_markup)
+
+def get_bot_name() -> str:
+    with db_lock:
+        conn = get_db()
+        row = conn.execute("SELECT val FROM bot_config WHERE key = 'bot_name'").fetchone()
+        conn.close()
+        return row["val"] if row else BOT_DEFAULT_NAME
+
+def set_bot_name(new_name: str):
+    with db_lock:
+        conn = get_db()
+        conn.execute("INSERT OR REPLACE INTO bot_config (key, val) VALUES ('bot_name', ?)", (new_name,))
+        conn.commit()
+        conn.close()
+
+def log_bank_action(user_id: int, text_log: str):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with db_lock:
+        conn = get_db()
+        conn.execute("INSERT INTO bank_logs (user_id, action_text, timestamp) VALUES (?, ?, ?)", (user_id, text_log, now_str))
+        conn.commit()
+        conn.close()
+
+def get_current_stock_price(s_name: str) -> int:
+    base_p = STOCKS.get(s_name, 160)
+    factor = (int(time.time()) // 600) % 9
+    return max(40, base_p + (factor * 18) - 60)
+
+def ensure_user(user: types.User) -> dict:
+    full_name = (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
+    full_name = full_name.strip() or "مواطن ليبي"
+    username = (user.username or "").lstrip("@")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    with db_lock:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+        row = c.fetchone()
+        if not row:
+            c.execute(
+                "INSERT INTO users (user_id, name, username, cash, bank_balance, msg_count, points, created_at) VALUES (?, ?, ?, 0, 0, 1, 1, ?)",
+                (user.id, full_name, username, today_str)
+            )
+            conn.commit()
+            c.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+            row = c.fetchone()
+        else:
+            new_msgs = row["msg_count"] + 1
+            new_pts = row["points"] + 1
+            new_lvl = row["level"]
+            if new_pts >= new_lvl * 50:
+                new_lvl += 1
+            c_at = row["created_at"] if row["created_at"] else today_str
+            c.execute(
+                "UPDATE users SET name = ?, username = ?, msg_count = ?, points = ?, level = ?, created_at = ? WHERE user_id = ?",
+                (full_name, username, new_msgs, new_pts, new_lvl, c_at, user.id)
+            )
+            conn.commit()
+            c.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+            row = c.fetchone()
+        data = dict(row)
+        conn.close()
+        return data
+
+def get_user_by_id(user_id: int) -> dict | None:
+    with db_lock:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def get_user_by_username(username: str) -> dict | None:
+    username = username.lstrip("@").lower()
+    with db_lock:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM users WHERE LOWER(username) = ?", (username,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def resolve_target_user(m: types.Message, text: str) -> dict | None:
+    if m.reply_to_message and m.reply_to_message.from_user:
+        return ensure_user(m.reply_to_message.from_user)
+    for p in text.split():
+        if p.startswith("@") and len(p) > 2:
+            u = get_user_by_username(p)
+            if u:
+                return u
+        elif p.isdigit() and len(p) >= 6:
+            u = get_user_by_id(int(p))
+            if u:
+                return u
+    return None
+
+def update_user_field(user_id: int, **kwargs):
+    if not kwargs:
+        return
+    cols = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+    vals = list(kwargs.values()) + [user_id]
+    with db_lock:
+        conn = get_db()
+        conn.execute(f"UPDATE users SET {cols} WHERE user_id = ?", vals)
+        conn.commit()
+        conn.close()
+
+def get_user_businesses(user_id: int) -> list[dict]:
+    with db_lock:
+        conn = get_db()
+        rows = conn.execute("SELECT * FROM businesses WHERE owner_id = ?", (user_id,)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+def ensure_group(chat: types.Chat) -> dict:
+    with db_lock:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM groups WHERE chat_id = ?", (chat.id,))
+        row = c.fetchone()
+        if not row:
+            default_settings = {k: True for k in SETTING_TYPES.keys()}
+            default_shortcuts = {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"}
+            c.execute(
+                "INSERT INTO groups (chat_id, title, locks, settings, shortcuts) VALUES (?, ?, ?, ?, ?)",
+                (chat.id, chat.title or "مجموعة", json.dumps({"الفشار": True}), json.dumps(default_settings), json.dumps(default_shortcuts))
+            )
+            conn.commit()
+            c.execute("SELECT * FROM groups WHERE chat_id = ?", (chat.id,))
+            row = c.fetchone()
+        else:
+            if chat.title and chat.title != row["title"]:
+                c.execute("UPDATE groups SET title = ? WHERE chat_id = ?", (chat.title, chat.id))
+                conn.commit()
+        data = dict(row)
+        conn.close()
+        return data
+
+def get_group_json(chat_id: int, col: str, default_val):
+    with db_lock:
+        conn = get_db()
+        row = conn.execute(f"SELECT {col} FROM groups WHERE chat_id = ?", (chat_id,)).fetchone()
+        conn.close()
+        if row and row[col]:
+            try:
+                return json.loads(row[col])
+            except Exception:
+                return default_val
+        return default_val
+
+def set_group_json(chat_id: int, col: str, data):
+    with db_lock:
+        conn = get_db()
+        conn.execute(f"UPDATE groups SET {col} = ? WHERE chat_id = ?", (json.dumps(data, ensure_ascii=False), chat_id))
+        conn.commit()
+        conn.close()
+
+def update_group_field(chat_id: int, **kwargs):
+    if not kwargs:
+        return
+    cols = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+    vals = list(kwargs.values()) + [chat_id]
+    with db_lock:
+        conn = get_db()
+        conn.execute(f"UPDATE groups SET {cols} WHERE chat_id = ?", vals)
+        conn.commit()
+        conn.close()
+
+def get_group_locks(chat_id: int) -> dict:
+    return get_group_json(chat_id, "locks", {})
+
+def set_group_lock(chat_id: int, lock_name: str, state: bool):
+    locks = get_group_locks(chat_id)
+    if lock_name == "الكل":
+        for k in LOCK_TYPES.keys():
+            locks[k] = state
+    else:
+        locks[lock_name] = state
+    set_group_json(chat_id, "locks", locks)
+
+def get_group_settings(chat_id: int) -> dict:
+    return get_group_json(chat_id, "settings", {k: True for k in SETTING_TYPES.keys()})
+
+def set_group_setting(chat_id: int, s_name: str, state: bool):
+    settings = get_group_settings(chat_id)
+    settings[s_name] = state
+    set_group_json(chat_id, "settings", settings)
+
+def get_rank(chat_id: int, user_id: int) -> int:
+    if user_id == ADMIN_ID:
+        return 99
+    with db_lock:
+        conn = get_db()
+        row = conn.execute("SELECT rank_level FROM ranks WHERE chat_id = ? AND user_id = ?", (chat_id, user_id)).fetchone()
+        conn.close()
+        if row and row["rank_level"] > 0:
+            return row["rank_level"]
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        if member.status == "creator":
+            set_rank(chat_id, user_id, 7)
+            return 7
+        elif member.status == "administrator":
+            return 2
+    except Exception:
+        pass
+    return 0
+
+def set_rank(chat_id: int, user_id: int, level: int):
+    with db_lock:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO ranks (chat_id, user_id, rank_level) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, user_id) DO UPDATE SET rank_level = ?",
+            (chat_id, user_id, level, level)
+        )
+        conn.commit()
+        conn.close()
+
+def get_custom_title(chat_id: int, user_id: int) -> str:
+    with db_lock:
+        conn = get_db()
+        row = conn.execute("SELECT custom_title FROM ranks WHERE chat_id = ? AND user_id = ?", (chat_id, user_id)).fetchone()
+        conn.close()
+        return row["custom_title"] if row and row["custom_title"] else "بدون لقب"
+
+def set_custom_title(chat_id: int, user_id: int, title: str):
+    cur_rank = get_rank(chat_id, user_id)
+    if cur_rank == 99:
+        cur_rank = 7
+    with db_lock:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO ranks (chat_id, user_id, rank_level, custom_title) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(chat_id, user_id) DO UPDATE SET custom_title = ?",
+            (chat_id, user_id, cur_rank, title, title)
+        )
+        conn.commit()
+        conn.close()
+
+def is_channel_member(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return True
+    try:
+        member = bot.get_chat_member(TARGET_CHANNEL_ID, user_id)
+        return member.status not in ("left", "kicked")
+    except ApiTelegramException as e:
+        err_s = str(e).lower()
+        if "user not found" in err_s:
+            return False
+        if "chat_admin_required" in err_s or "chat not found" in err_s:
+            return True
+        return False
+    except Exception:
+        return True
+
+def get_subscribe_kb() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            f"📢 اشترك في قناة البوت @{CHANNEL_USERNAME}",
+            url=f"https://t.me/{CHANNEL_USERNAME}"
+        ),
+        types.InlineKeyboardButton(
+            "✅ تم الاشتراك — تحقّق الآن",
+            callback_data="check_sub"
+        )
+    )
+    return kb
+
+def get_interaction_label(msgs: int) -> str:
+    if msgs < 50:
+        return "سايق مخده 😹"
+    elif msgs < 200:
+        return "متفاعل ناشئ ✨"
+    elif msgs < 600:
+        return "نشيط القروب 🔥"
+    elif msgs < 1500:
+        return "ملك التفاعل 👑"
+    return "أسطورة القروب 💎"
+
+def get_user_bio(user_id: int) -> str:
+    try:
+        ch = bot.get_chat(user_id)
+        if ch and ch.bio:
+            return ch.bio.strip()
+    except Exception:
+        pass
+    return "لا يوجد بايو ✨"
+
+def build_id_photo_like_kb(chat_id: int, target_u: dict, grp_data: dict) -> types.InlineKeyboardMarkup | None:
+    mode = grp_data.get("id_addon_mode", "الكل")
+    if mode == "معطل":
+        return None
+    like_emj = grp_data.get("like_emoji", "🧡") or "🧡"
+    likes_cnt = target_u.get("likes_count", 0)
+    t_id = target_u["user_id"]
+    t_name = target_u["name"]
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    name_btn = types.InlineKeyboardButton(f"{t_name}", callback_data=f"idname:{t_id}")
+    like_btn = types.InlineKeyboardButton(f"{like_emj} {likes_cnt}", callback_data=f"like_u:{t_id}")
+
+    if mode == "الاسم":
+        kb.row(name_btn)
+    elif mode == "اللايك":
+        kb.row(like_btn)
+    else:
+        kb.row(name_btn, like_btn)
+    return kb
+
+def send_id_card(m: types.Message, target_u: dict, grp_data: dict):
+    chat_id = m.chat.id
+    if grp_data.get("freeze_id", 0) == 1:
+        return
+    settings = get_group_settings(chat_id)
+    if not settings.get("الايدي", True):
+        return
+
+    t_id = target_u["user_id"]
+    t_rank = get_rank(chat_id, t_id)
+    rank_label = RANK_NAMES.get(t_rank, "عضو").split()[0]
+    uname_str = f"@{target_u['username']}" if target_u.get("username") else "لا يوجد"
+    card_badge = BANK_CARDS.get(target_u.get("bank_card", "عادي"), BANK_CARDS["عادي"])["badge"]
+    inter_str = get_interaction_label(target_u.get("msg_count", 0))
+    header_str = grp_data.get("id_header") or "⌯ فديت الصاك مححه🥰"
+
+    caption = (
+        f"{esc(header_str)}\n"
+        f"⚡ : ايديك ↫ <code>{t_id}</code>\n"
+        f"⚡ : يوزرك ↫ {esc(uname_str)}\n"
+        f"⚡ : حسابك ↫ {esc(card_badge)}\n"
+        f"⚡ : رتبتك ↫ {esc(rank_label)}\n"
+        f"⚡ : تفاعلك ↫ {esc(inter_str)}\n"
+        f"⚡ : رسائلك ↫ {target_u.get('msg_count', 0)}\n"
+        f"⚡ : سحكاتك ↫ {target_u.get('sahkat_count', 0)}\n"
+        f"⚡ : نقاطك ↫ {target_u.get('points', 0)}"
+    )
+    if settings.get("البايو", True):
+        bio_txt = get_user_bio(t_id)
+        caption += f"\n⚡ : البايو ↫ {esc(bio_txt)}"
+
+    kb = build_id_photo_like_kb(chat_id, target_u, grp_data)
+    if settings.get("الايدي بالصوره", True):
+        send_with_user_photo(chat_id, t_id, caption, reply_to_message_id=m.message_id, reply_markup=kb)
+    else:
+        bot.send_message(chat_id, caption, reply_to_message_id=m.message_id, reply_markup=kb)
+
+def send_beauty_card(m: types.Message, target_u: dict, grp_data: dict):
+    chat_id = m.chat.id
+    if grp_data.get("freeze_id", 0) == 1:
+        return
+    settings = get_group_settings(chat_id)
+    if not settings.get("صورتي", True):
+        return
+    t_id = target_u["user_id"]
+    pct = 100 if t_id == ADMIN_ID else random.randint(25, 100)
+    caption = f"▽ : نسبه جمالك هي : {pct}%"
+    kb = build_id_photo_like_kb(chat_id, target_u, grp_data)
+    send_with_user_photo(chat_id, t_id, caption, reply_to_message_id=m.message_id, reply_markup=kb)
+
+def build_id_addon_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        types.InlineKeyboardButton("الاسم + اللايك (الافتراضي)", callback_data=f"idadn:{owner_id}:الكل"),
+        types.InlineKeyboardButton("اللايك فقط ❤️", callback_data=f"idadn:{owner_id}:اللايك"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("الاسم فقط 👤", callback_data=f"idadn:{owner_id}:الاسم"),
+        types.InlineKeyboardButton("تعطيل الملحق ❌", callback_data=f"idadn:{owner_id}:معطل"),
+    )
+    return kb
+
+def render_menu(key: str) -> str:
+    return MENU_TEXTS[key].replace("{bot_name}", esc(get_bot_name())).replace("{channel}", CHANNEL_USERNAME)
+
+def get_private_start_kb(user_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        types.InlineKeyboardButton("قناه البوت", url=f"https://t.me/{CHANNEL_USERNAME}"),
+        types.InlineKeyboardButton("اضفني لمجموعتك ➕", url=f"https://t.me/{BOT_USERNAME}?startgroup=true"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("📍 اختيار مدينتي", callback_data=f"pc_m:{user_id}"),
+        types.InlineKeyboardButton("🏦 فتح / تغيير المصرف", callback_data=f"pb_m:{user_id}"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("المطور", url=f"tg://user?id={ADMIN_ID}"),
+        types.InlineKeyboardButton("اوامر الاعضاء", callback_data=f"pm_c:{user_id}"),
+    )
+    if user_id == ADMIN_ID:
+        kb.row(
+            types.InlineKeyboardButton("⚡ لوحة المطور الأساسي MG", callback_data=f"menu_dev:{user_id}"),
+        )
+    kb.row(
+        types.InlineKeyboardButton("ARKAN SOURCE ™ ®", url=f"https://t.me/{CHANNEL_USERNAME}"),
+    )
+    return kb
+
+def get_commands_kb(owner_id: int = 0) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        types.InlineKeyboardButton("م1", callback_data=f"menu_1:{owner_id}"),
+        types.InlineKeyboardButton("م2", callback_data=f"menu_2:{owner_id}"),
+        types.InlineKeyboardButton("م3", callback_data=f"menu_3:{owner_id}"),
+        types.InlineKeyboardButton("م4", callback_data=f"menu_4:{owner_id}"),
+        types.InlineKeyboardButton("م5", callback_data=f"menu_5:{owner_id}"),
+        types.InlineKeyboardButton("م6", callback_data=f"menu_6:{owner_id}"),
+        types.InlineKeyboardButton("م7", callback_data=f"menu_7:{owner_id}"),
+        types.InlineKeyboardButton("م8", callback_data=f"menu_8:{owner_id}"),
+        types.InlineKeyboardButton("م9", callback_data=f"menu_9:{owner_id}"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("الالعاب", callback_data=f"menu_games:{owner_id}"),
+        types.InlineKeyboardButton("م المطور", callback_data=f"menu_dev:{owner_id}"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("القفل / الفتح", callback_data=f"locks_p:{owner_id}"),
+        types.InlineKeyboardButton("التفعيل/ التعطيل", callback_data=f"sets_p:{owner_id}"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("ARKAN SOURCE ™ ®", url=f"https://t.me/{CHANNEL_USERNAME}")
+    )
+    return kb
+
+def build_bank_secret_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        types.InlineKeyboardButton("💳 كشف رصيد المصرف السري", callback_data=f"sbank_{owner_id}"),
+        types.InlineKeyboardButton("📩 إرسال التقرير للخاص", callback_data=f"dbank_{owner_id}")
+    )
+    kb.row(
+        types.InlineKeyboardButton("💎 ترقية البطاقة (VIP)", callback_data=f"pcard_m:{owner_id}"),
+        types.InlineKeyboardButton("🏦 فتح / تغيير المصرف", callback_data=f"pb_m:{owner_id}")
+    )
+    kb.row(
+        types.InlineKeyboardButton("📍 تغيير الفرع / المدينة", callback_data=f"pc_m:{owner_id}"),
+    )
+    return kb
+
+def build_cards_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    card_keys = list(BANK_CARDS.keys())
+    for idx, ck in enumerate(card_keys):
+        if ck == "عادي":
+            continue
+        ci = BANK_CARDS[ck]
+        kb.add(types.InlineKeyboardButton(
+            f"💳 بطاقة {ci['badge']} — السعر: {ci['price']} د.ل (خصم عمولة {int(ci['fee_discount']*100)}%)",
+            callback_data=f"ucard:{owner_id}:{idx}"
+        ))
+    return kb
+
+def build_city_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    btns = []
+    for idx, (c_name, ticket, _) in enumerate(CITY_LIST):
+        btns.append(types.InlineKeyboardButton(f"📍 {c_name} ({ticket} د.ل)", callback_data=f"sc:{owner_id}:{idx}"))
+    kb.add(*btns)
+    return kb
+
+def build_banks_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for idx, (b_name, fee, sec, _) in enumerate(BANK_LIST):
+        kb.add(types.InlineKeyboardButton(
+            f"🏛️ {b_name} (نسبة: {fee}% | حماية: {sec}%)",
+            callback_data=f"sb:{owner_id}:o:{idx}"
+        ))
+    with db_lock:
+        conn = get_db()
+        custom_rows = conn.execute("SELECT id, bank_name, fee_pct, security FROM custom_banks").fetchall()
+        conn.close()
+    for cr in custom_rows:
+        kb.add(types.InlineKeyboardButton(
+            f"🏦 مصرف خاص: {cr['bank_name']} (نسبة: {cr['fee_pct']}% | حماية: {cr['security']}%)",
+            callback_data=f"sb:{owner_id}:c:{cr['id']}"
+        ))
+    return kb
+
+def build_branches_kb(owner_id: int, bank_idx: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if 0 <= bank_idx < len(BANK_LIST):
+        branches = BANK_LIST[bank_idx][3]
+    else:
+        branches = ["الفرع الرئيسي - طرابلس", "فرع بنغازي", "فرع مصراتة"]
+        bank_idx = 0
+    for br_idx, br_name in enumerate(branches):
+        kb.add(types.InlineKeyboardButton(f"🏢 {br_name}", callback_data=f"sbr:{owner_id}:{bank_idx}:{br_idx}"))
+    return kb
+
+def build_jobs_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    btns = []
+    for idx, j_name in enumerate(JOB_LIST):
+        sal = JOBS[j_name]["levels"][1]["salary"]
+        btns.append(types.InlineKeyboardButton(f"💼 {j_name} ({sal} د.ل)", callback_data=f"sj:{owner_id}:{idx}"))
+    kb.add(*btns)
+    return kb
+
+def build_biz_kb(owner_id: int) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    btns = []
+    for idx, b_key in enumerate(BIZ_KEYS_LIST):
+        pr = BUSINESS_CATALOG[b_key]["price"]
+        btns.append(types.InlineKeyboardButton(f"🏢 {b_key} ({pr} د.ل)", callback_data=f"obiz:{owner_id}:{idx}"))
+    kb.add(*btns)
+    return kb
+
+def build_locks_kb(chat_id: int, owner_id: int = 0) -> types.InlineKeyboardMarkup:
+    locks = get_group_locks(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for idx, (key, label) in enumerate(LOCK_LIST):
+        status = "🔒" if locks.get(key, False) else "🔓"
+        buttons.append(
+            types.InlineKeyboardButton(f"{label} : {status}", callback_data=f"tl:{owner_id}:{idx}")
+        )
+    kb.add(*buttons)
+    kb.row(types.InlineKeyboardButton("🔙 رجوع للأوامر الرئيسية", callback_data=f"m_main:{owner_id}"))
+    return kb
+
+def build_settings_kb(chat_id: int, owner_id: int = 0) -> types.InlineKeyboardMarkup:
+    settings = get_group_settings(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for idx, (key, label) in enumerate(SETTING_LIST):
+        status = "✅ مفعل" if settings.get(key, True) else "❌ معطل"
+        buttons.append(
+            types.InlineKeyboardButton(f"{label} : {status}", callback_data=f"ts:{owner_id}:{idx}")
+        )
+    kb.add(*buttons)
+    kb.row(types.InlineKeyboardButton("🔙 رجوع للأوامر الرئيسية", callback_data=f"m_main:{owner_id}"))
+    return kb
+
+@bot.message_handler(content_types=["new_chat_members"])
+def on_new_member(m: types.Message):
+    if m.chat.type not in ("group", "supergroup"):
+        return
+    grp = ensure_group(m.chat)
+    locks = get_group_locks(m.chat.id)
+    settings = get_group_settings(m.chat.id)
+    b_name = get_bot_name()
+    banned_names = get_group_json(m.chat.id, "banned_names", [])
+
+    for new_user in m.new_chat_members:
+        if new_user.is_bot:
+            try:
+                me_id = bot.get_me().id
+            except Exception:
+                me_id = 0
+            if new_user.id == me_id:
+                sender_id = m.from_user.id if m.from_user else 0
+                bot.send_message(
+                    m.chat.id,
+                    (
+                        f"▽ : تم إضافة البوت ({esc(b_name)}) بنجاح 🇱🇾\n"
+                        f"------------------\n"
+                        f"▽ : ارفع البوت مشرفاً ثم ارسل <code>تفعيل</code>\n"
+                        f"▽ : لعرض الأوامر ارسل <code>الاوامر</code>"
+                    ),
+                    reply_markup=get_commands_kb(sender_id)
+                )
+            elif (locks.get("البوتات", False) or locks.get("الكل", False)) and get_rank(m.chat.id, m.from_user.id) < 2:
+                try:
+                    bot.ban_chat_member(m.chat.id, new_user.id)
+                except Exception:
+                    pass
+        else:
+            if locks.get("الدخول", False) or locks.get("الكل", False):
+                try:
+                    bot.ban_chat_member(m.chat.id, new_user.id)
+                    bot.unban_chat_member(m.chat.id, new_user.id)
+                except Exception:
+                    pass
+                continue
+            u_fname = norm_ar(new_user.first_name or "")
+            if any(norm_ar(bn) in u_fname for bn in banned_names if bn):
+                try:
+                    bot.ban_chat_member(m.chat.id, new_user.id)
+                except Exception:
+                    pass
+                continue
+            ensure_user(new_user)
+            if settings.get("الترحيب", True) and grp.get("welcome_enabled", 1):
+                w_text = grp.get("welcome_text") or "مرحبتين بيك يا غالي نورت القروب 🇱🇾"
+                bot.reply_to(
+                    m,
+                    f"▽ : أهلاً بك يا <a href='tg://user?id={new_user.id}'>{esc(new_user.first_name)}</a>\n"
+                    f"▽ : {esc(w_text)}\n"
+                    f"▽ : افتح حسابك المصرفي بكتابة <code>انشاء حساب</code>"
+                )
+
+@bot.edited_message_handler(func=lambda m: m.chat.type in ("group", "supergroup"))
+def on_message_edited(m: types.Message):
+    if get_rank(m.chat.id, m.from_user.id) >= 1:
+        return
+    locks = get_group_locks(m.chat.id)
+    if locks.get("التعديل", False) or locks.get("تعديل الميديا", False) or locks.get("الكل", False):
+        try:
+            bot.delete_message(m.chat.id, m.message_id)
+        except Exception:
+            pass
+
+@bot.message_handler(content_types=["photo", "video", "sticker", "animation", "document", "voice", "audio", "video_note", "contact", "location"])
+def media_handler(m: types.Message):
+    if m.chat.type not in ("group", "supergroup"):
+        return
+    if m.from_user and m.from_user.id == ADMIN_ID:
+        return
+    if m.content_type == "contact" and m.from_user:
+        u_c = ensure_user(m.from_user)
+        update_user_field(m.from_user.id, contacts_count=u_c.get("contacts_count", 0) + 1)
+    user_rank = get_rank(m.chat.id, m.from_user.id)
+    grp_data = ensure_group(m.chat)
+    if grp_data.get("night_mode", 0) == 1 and user_rank < 6:
+        try:
+            bot.delete_message(m.chat.id, m.message_id)
+        except Exception:
+            pass
+        return
+    if user_rank >= 1:
+        return
+    locks = get_group_locks(m.chat.id)
+    del_msg = False
+    if locks.get("الكل") or locks.get("الدردشه") or locks.get("الوسائط"):
+        del_msg = True
+    elif (m.forward_from or m.forward_from_chat) and (locks.get("التوجيه") or locks.get("القنوات")):
+        del_msg = True
+    elif m.content_type == "photo" and locks.get("الصور"):
+        del_msg = True
+    elif m.content_type == "video" and locks.get("الفيديو"):
+        del_msg = True
+    elif m.content_type == "sticker" and locks.get("الملصقات"):
+        del_msg = True
+    elif m.content_type == "animation" and locks.get("المتحركه"):
+        del_msg = True
+    elif m.content_type == "document" and locks.get("الملفات"):
+        del_msg = True
+    elif m.content_type == "voice" and locks.get("الصوت"):
+        del_msg = True
+    elif m.content_type == "audio" and locks.get("الاغاني"):
+        del_msg = True
+    elif m.content_type == "video_note" and locks.get("السيلفي"):
+        del_msg = True
+    elif m.content_type == "contact" and locks.get("الجهات"):
+        del_msg = True
+    elif m.content_type == "location" and locks.get("الموقع"):
+        del_msg = True
+    if del_msg:
+        try:
+            bot.delete_message(m.chat.id, m.message_id)
+        except Exception:
+            pass
+
+@bot.message_handler(commands=["start"])
+def cmd_start(m: types.Message):
+    user = m.from_user
+    u = ensure_user(user)
+    b_name = get_bot_name()
+    parts = (m.text or "").split(maxsplit=1)
+
+    if not is_channel_member(user.id):
+        bot.reply_to(
+            m,
+            f"▽ : عذراً يا <b>{esc(u['name'])}</b>!\n"
+            f"▽ : يجب عليك الاشتراك في قناة البوت الرسمية @{CHANNEL_USERNAME} أولاً لتتمكن من استخدام البوت.",
+            reply_markup=get_subscribe_kb()
+        )
+        return
+
+    if m.chat.type == "private" and len(parts) > 1 and parts[1].startswith("whisper_"):
+        try:
+            _, c_id_s, s_id_s, t_id_s, r_id_s = parts[1].split("_")
+            c_id, s_id, t_id, r_id = int(c_id_s), int(s_id_s), int(t_id_s), int(r_id_s)
+        except Exception:
+            bot.reply_to(m, "▽ : عذرا، انتهت صلاحية الهمسة")
+            return
+
+        if user.id != s_id:
+            bot.reply_to(m, "▽ : عذرا، هذه الهمسة ليست مخصصة لك!")
+            return
+
+        target_u = get_user_by_id(t_id)
+        t_name = target_u["name"] if target_u else "العضو"
+        pending_whispers[user.id] = {
+            "chat_id": c_id,
+            "target_id": t_id,
+            "target_name": t_name,
+            "reply_id": r_id,
+            "expires": int(time.time()) + 300
+        }
+        bot.reply_to(m, "▽ : حسناً، ارسل الهمسة الان")
+        return
+
+    if m.chat.type == "private":
+        caption = (
+            f"▽ : أهلا بك في بوت {esc(b_name)} 🇱🇾\n"
+            f"------------------\n"
+            f"▽ : مدينتك الحالية ← {{ {esc(u['city'])} }}\n"
+            f"▽ : مصرفك الحالي ← {{ {esc(u['bank_name'])} }}\n"
+            f"▽ : فرع المصرف ← {{ {esc(u['bank_branch'])} }}\n"
+            f"------------------\n"
+            f"▽ : اضف البوت وارفعه مشرف في مجموعتك\n"
+            f"▽ : ارسل {{ تفعيل }} ليتم تفعيل المجموعه\n"
+            f"▽ : يوزر البوت ← {{@{BOT_USERNAME}}}"
+        )
+        if user.id == ADMIN_ID:
+            caption += "\n------------------\n⚡ <b>مرحباً بك يا مطور البوت (MG)! جميع أوامرك السيادية تعمل هنا في الخاص وفي المجموعات.</b>"
+        send_with_user_photo(
+            m.chat.id,
+            user.id,
+            caption,
+            reply_to_message_id=m.message_id,
+            reply_markup=get_private_start_kb(user.id)
+        )
+        return
+
+    bot.reply_to(
+        m,
+        render_menu("main"),
+        reply_markup=get_commands_kb(user.id)
+    )
+
+def decorate_text_name(raw_name: str) -> str:
+    return (
+        f"1. ༺ {raw_name} ༻\n"
+        f"2. ♛ {raw_name} ♛\n"
+        f"3. ⫷ {raw_name} ⫸\n"
+        f"4. ꧁༒ {raw_name} ༒꧂\n"
+        f"5. ★彡 {raw_name} 彡★"
+    )
+
+def handle_admin_and_info_cmds(m: types.Message, text: str, u_data: dict, grp_data: dict, user_rank: int, locks: dict, now: int) -> bool:
+    user = m.from_user
+    chat_id = m.chat.id
+    b_name = get_bot_name()
+    ntext = norm_ar(text)
+
+    if chat_id in pending_custom_cmd and pending_custom_cmd[chat_id]["user_id"] == user.id:
+        st_info = pending_custom_cmd[chat_id]
+        if ntext in ("الغاء", "تراجع"):
+            del pending_custom_cmd[chat_id]
+            bot.reply_to(m, "▽ : تم إلغاء إضافة الأمر.")
+            return True
+        if st_info["step"] == 1:
+            st_info["orig_cmd"] = text.strip()
+            st_info["step"] = 2
+            bot.reply_to(m, f"▽ : حسناً، أرسل الآن الاختصار أو الكلمة الجديدة التي تريدها للأمر « <b>{esc(text)}</b> »\n(مثال: <code>ا</code> أو <code>ص</code>) :")
+            return True
+        elif st_info["step"] == 2:
+            new_shortcut = text.strip()
+            orig_c = st_info["orig_cmd"]
+            del pending_custom_cmd[chat_id]
+            scs = get_group_json(chat_id, "shortcuts", {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"})
+            scs[new_shortcut] = orig_c
+            set_group_json(chat_id, "shortcuts", scs)
+            bot.reply_to(
+                m,
+                f"▽ : ✅ تم إضافة الأمر بنجاح!\n"
+                f"▽ : الأمر الأصلي ← « <b>{esc(orig_c)}</b> »\n"
+                f"▽ : الأمر المضاف (الاختصار) ← « <b>{esc(new_shortcut)}</b> »"
+            )
+            return True
+
+    if ntext in ("الاوامر", "اوامر", "قائمه الاوامر"):
+        bot.reply_to(m, render_menu("main"), reply_markup=get_commands_kb(user.id))
+        return True
+
+    if ntext in ("م المطور", "اوامر المطور"):
+        if user.id != ADMIN_ID:
+            bot.reply_to(m, "▽ : 🚫 هذا القسم خاص بالمطور الأساسي (MG) فقط!")
+            return True
+        bot.reply_to(m, render_menu("menu_dev"), reply_markup=get_commands_kb(user.id))
+        return True
+
+    for i in range(1, 10):
+        if ntext == f"م{i}" or ntext == f"م {i}":
+            bot.reply_to(m, render_menu(f"menu_{i}"), reply_markup=get_commands_kb(user.id))
+            return True
+
+    if ntext in ("الالعاب", "العاب"):
+        bot.reply_to(m, render_menu("menu_games"), reply_markup=get_commands_kb(user.id))
+        return True
+
+    if ntext in ("الحمايه", "لوحه الحمايه"):
+        if user_rank < 2:
+            bot.reply_to(m, "▽ : ❌ لوحة قفل وفتح الحماية مخصصة للادمنية فما فوق فقط!")
+            return True
+        bot.reply_to(m, f"▽ : لوحة القفل والفتح لبوت ({esc(b_name)}) :", reply_markup=build_locks_kb(chat_id, user.id))
+        return True
+
+    if ntext in ("الاعدادات", "التفعيل والتعطيل", "اعدادات المضاد"):
+        if user_rank < 2:
+            bot.reply_to(m, "▽ : ❌ لوحة الإعدادات مخصصة للادمنية والمدراء فما فوق!")
+            return True
+        bot.reply_to(m, f"▽ : لوحة التفعيل والتعطيل لبوت ({esc(b_name)}) :", reply_markup=build_settings_kb(chat_id, user.id))
+        return True
+
+    if ntext in ("ايدي", "ايدي بالرد", "ايدي العضو", "ايدي المميز"):
+        target_u = ensure_user(m.reply_to_message.from_user) if m.reply_to_message and m.reply_to_message.from_user else u_data
+        send_id_card(m, target_u, grp_data)
+        return True
+
+    if ntext in ("صورتي", "جمالي"):
+        target_u = ensure_user(m.reply_to_message.from_user) if m.reply_to_message and m.reply_to_message.from_user else u_data
+        send_beauty_card(m, target_u, grp_data)
+        return True
+
+    if ntext == "ملحق الايدي":
+        if user_rank < 4:
+            bot.reply_to(m, "▽ : ❌ أمر ملحق الأيدي مخصص للمنشئين فما فوق!")
+            return True
+        bot.reply_to(
+            m,
+            "▽ : اختر ما تريد عرضه أسفل كليشة (الايدي وصورتي) :",
+            reply_markup=build_id_addon_kb(user.id)
+        )
+        return True
+
+    if ntext.startswith("اضف لايك"):
+        if user_rank < 4:
+            bot.reply_to(m, "▽ : ❌ هذا الأمر للمنشئين فما فوق!")
+            return True
+        parts = text.split(maxsplit=2)
+        emj = parts[2].strip() if len(parts) >= 3 else "❤️"
+        update_group_field(chat_id, like_emoji=emj)
+        bot.reply_to(m, f"▽ : ✅ تم تغيير رمز اللايك أسفل الأيدي وصورتي إلى ← {{ {esc(emj)} }}")
+        return True
+
+    if ntext == "مسح لايك":
+        if user_rank < 4:
+            return True
+        update_group_field(chat_id, like_emoji="🧡")
+        bot.reply_to(m, "▽ : ✅ تم إرجاع رمز اللايك الافتراضي ← { 🧡 }")
+        return True
+
+    if ntext.startswith(("تغيير الايدي ", "تعيين الايدي ")):
+        if user_rank < 4:
+            return True
+        new_hdr = text.split(maxsplit=2)[2].strip()
+        update_group_field(chat_id, id_header=new_hdr)
+        bot.reply_to(m, f"▽ : ✅ تم تغيير عنوان كليشة الأيدي إلى :\n{esc(new_hdr)}")
+        return True
+
+    if ntext == "مسح الايدي":
+        if user_rank < 4:
+            return True
+        update_group_field(chat_id, id_header="⌯ فديت الصاك مححه🥰")
+        bot.reply_to(m, "▽ : ✅ تم استعادة كليشة الأيدي الافتراضية بنجاح!")
+        return True
+
+    if ntext == "تجميد الايدي":
+        if user_rank < 6:
+            return True
+        update_group_field(chat_id, freeze_id=1)
+        bot.reply_to(m, "▽ : ❄️ تم تجميد أمر الأيدي وصورتي في المجموعة!")
+        return True
+
+    if ntext in ("الغاء تجميد الايدي", "فتح الايدي"):
+        if user_rank < 6:
+            return True
+        update_group_field(chat_id, freeze_id=0)
+        bot.reply_to(m, "▽ : ✅ تم إلغاء تجميد الأيدي وصورتي!")
+        return True
+
+    if ntext == "رسائلي":
+        bot.reply_to(m, f"▽ : عدد رسائلك في المجموعة ← <b>{u_data['msg_count']}</b> رسالة 💬")
+        return True
+
+    if ntext in ("تفاعلي", "التفاعل"):
+        bot.reply_to(m, f"▽ : مستوى تفاعلك ← <b>{esc(get_interaction_label(u_data['msg_count']))}</b> ({u_data['points']} نقطة)")
+        return True
+
+    if ntext == "تفاعله" and m.reply_to_message:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        bot.reply_to(m, f"▽ : تفاعل <b>{esc(t_u['name'])}</b> ← <b>{esc(get_interaction_label(t_u['msg_count']))}</b>")
+        return True
+
+    if ntext in ("بايو", "نبذه"):
+        t_id = m.reply_to_message.from_user.id if m.reply_to_message and m.reply_to_message.from_user else user.id
+        bot.reply_to(m, f"▽ : البايو ↫ <b>{esc(get_user_bio(t_id))}</b>")
+        return True
+
+    if ntext == "اسمي":
+        bot.reply_to(m, f"▽ : اسمك هو ← <b>{esc(u_data['name'])}</b>")
+        return True
+
+    if ntext == "يوزري":
+        un = f"@{u_data['username']}" if u_data.get("username") else "لا يوجد لديك يوزر"
+        bot.reply_to(m, f"▽ : يوزرك هو ← <b>{esc(un)}</b>")
+        return True
+
+    if ntext == "رابطي":
+        link = f"https://t.me/{u_data['username']}" if u_data.get("username") else f"tg://user?id={user.id}"
+        bot.reply_to(m, f"▽ : رابط حسابك ← {esc(link)}")
+        return True
+
+    if ntext == "رابطه" and m.reply_to_message:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        link = f"https://t.me/{t_u['username']}" if t_u.get("username") else f"tg://user?id={t_u['user_id']}"
+        bot.reply_to(m, f"▽ : رابط حساب <b>{esc(t_u['name'])}</b> ← {esc(link)}")
+        return True
+
+    if ntext == "لقبي":
+        bot.reply_to(m, f"▽ : لقبك في المجموعة ← <b>{esc(get_custom_title(chat_id, user.id))}</b>")
+        return True
+
+    if ntext == "لقبه" and m.reply_to_message:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        bot.reply_to(m, f"▽ : لقب <b>{esc(t_u['name'])}</b> ← <b>{esc(get_custom_title(chat_id, t_u['user_id']))}</b>")
+        return True
+
+    if ntext in ("رتبتي", "صلاحياتي"):
+        bot.reply_to(m, f"▽ : رتبتك في المجموعة ← <b>{RANK_NAMES.get(user_rank, 'عضو 🙍‍♂️')}</b>")
+        return True
+
+    if ntext in ("الرتبه", "رتبته", "صلاحياته") and m.reply_to_message:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        t_r = get_rank(chat_id, t_u["user_id"])
+        bot.reply_to(m, f"▽ : رتبة <b>{esc(t_u['name'])}</b> ← <b>{RANK_NAMES.get(t_r, 'عضو 🙍‍♂️')}</b>")
+        return True
+
+    if ntext == "نزلني":
+        if user_rank == 0 or user.id == ADMIN_ID:
+            bot.reply_to(m, "▽ : أنت عضو عادي بالفعل أو مطور أساسي!")
+            return True
+        set_rank(chat_id, user.id, 0)
+        bot.reply_to(m, "▽ : ✅ تم تنزيل رتبتك إلى عضو بناءً على طلبك.")
+        return True
+
+    if ntext == "جهاتي":
+        bot.reply_to(m, f"▽ : عدد جهاتك المضافة ← <b>{u_data.get('contacts_count', 0)}</b> جهة اتصال 👤")
+        return True
+
+    if ntext == "جهاته" and m.reply_to_message:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        bot.reply_to(m, f"▽ : جهات <b>{esc(t_u['name'])}</b> ← <b>{t_u.get('contacts_count', 0)}</b> جهة اتصال 👤")
+        return True
+
+    if ntext == "سحكاتي":
+        bot.reply_to(m, f"▽ : عدد سحكاتك المسجلة ← <b>{u_data.get('sahkat_count', 0)}</b> سحكة 😂")
+        return True
+
+    if ntext == "نقاطي":
+        bot.reply_to(m, f"▽ : نقاطك التفاعلية ← <b>{u_data.get('points', 0)}</b> نقطة ⭐ (لبيعها اكتب: <code>بيع نقاطي 10</code>)")
+        return True
+
+    if ntext.startswith("بيع نقاطي"):
+        parts = ntext.split()
+        pts = int(parts[-1]) if len(parts) >= 3 and parts[-1].isdigit() else u_data.get("points", 0)
+        if pts <= 0 or pts > u_data.get("points", 0):
+            bot.reply_to(m, "▽ : ❌ نقاطك الحالية لا تكفي!")
+            return True
+        cash_gain = pts * 25
+        update_user_field(user.id, points=u_data["points"] - pts, cash=u_data["cash"] + cash_gain)
+        bot.reply_to(m, f"▽ : 💰 بعت <b>{pts} نقطة</b> وحصلت على <b>{cash_gain} د.ل</b> كاش في جيبك!")
+        return True
+
+    if ntext == "مسح نقاطي":
+        update_user_field(user.id, points=0)
+        bot.reply_to(m, "▽ : ✅ تم تصفير نقاطك بنجاح.")
+        return True
+
+    if ntext.startswith("كول "):
+        word = text.split(maxsplit=1)[1].strip()
+        bot.reply_to(m, f"▽ : {esc(word)}")
+        return True
+
+    if ntext.startswith("زخرفه"):
+        name_to_dec = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else u_data["name"]
+        bot.reply_to(m, f"▽ : زخرفة الاسم « <b>{esc(name_to_dec)}</b> » :\n------------------\n{esc(decorate_text_name(name_to_dec))}")
+        return True
+
+    if ntext in ("الوقت", "الساعه", "التاريخ"):
+        now_dt = datetime.now()
+        bot.reply_to(
+            m,
+            f"▽ : 📅 التاريخ ← <b>{now_dt.strftime('%Y / %m / %d')}</b>\n"
+            f"▽ : ⏰ الساعة الآن ← <b>{now_dt.strftime('%I:%M %p')}</b>"
+        )
+        return True
+
+    if ntext in ("الانشاء", "انشاء البوت"):
+        c_date = u_data.get("created_at") or "2024-01-15"
+        bot.reply_to(m, f"▽ : تاريخ انضمامك وتسجيلك في البوت ← <b>{esc(c_date)}</b> 📅")
+        return True
+
+    if ntext == "الابراج" or ntext.startswith("برج "):
+        sign_q = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else ""
+        matched_sign = match_dict_key(ZODIAC_SIGNS, sign_q)
+        if matched_sign:
+            bot.reply_to(m, f"🔮 <b>توقعات برج {matched_sign} اليوم :</b>\n▽ : {ZODIAC_SIGNS[matched_sign]}")
+        else:
+            signs_str = " ، ".join(ZODIAC_SIGNS.keys())
+            bot.reply_to(m, f"▽ : 🔮 اكتب كلمة <code>برج</code> متبوعة باسم برجك:\n({signs_str})")
+        return True
+
+    if ntext in ("نداء", "منشن", "ومضه"):
+        with db_lock:
+            conn = get_db()
+            rnd_u = conn.execute("SELECT user_id, name FROM users ORDER BY RANDOM() LIMIT 1").fetchone()
+            conn.close()
+        if rnd_u:
+            bot.reply_to(
+                m,
+                f"✨ <b>نداء ومضة خاص إلى :</b> <a href='tg://user?id={rnd_u['user_id']}'>{esc(rnd_u['name'])}</a>\n"
+                f"▽ : {random.choice(BEAUTY_COMPLIMENTS)}"
+            )
+        return True
+
+    if ntext == "ترند":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT name, msg_count, likes_count FROM users ORDER BY msg_count DESC LIMIT 5").fetchall()
+            conn.close()
+        txt = "▽ : 🔥 <b>ترند المتفاعلين في القروب :</b>\n------------------\n"
+        for idx, r in enumerate(rows, 1):
+            txt += f"{idx}. <b>{esc(r['name'])}</b> ~ {r['msg_count']} رسالة | ❤️ {r['likes_count']}\n"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext in ("اضف امر", "اضافه امر"):
+        if user_rank < 3:
+            bot.reply_to(m, "▽ : ❌ هذا الأمر للمدراء والمنشئين فما فوق!")
+            return True
+        pending_custom_cmd[chat_id] = {"user_id": user.id, "step": 1, "orig_cmd": ""}
+        bot.reply_to(
+            m,
+            "▽ : حسناً، أرسل الآن <b>الأمر الأصلي</b> الذي تريد عمل أمر مضاف (اختصار) له\n"
+            "(مثال: <code>ايدي</code> أو <code>صورتي</code> أو <code>حسابي</code>) :"
+        )
+        return True
+
+    if ntext.startswith(("اضف امر ", "اضف اختصار ")) and "=" in text:
+        if user_rank < 3:
+            return True
+        raw = text.split(maxsplit=2)[2].strip()
+        k, v = [x.strip() for x in raw.split("=", 1)]
+        if k and v:
+            scs = get_group_json(chat_id, "shortcuts", {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"})
+            scs[k] = v
+            set_group_json(chat_id, "shortcuts", scs)
+            bot.reply_to(m, f"▽ : ✅ تم إضافة الأمر المضاف ← <code>{esc(k)}</code> ~ <code>{esc(v)}</code>")
+        return True
+
+    if ntext.startswith(("مسح امر ", "مسح اختصار ")):
+        if user_rank < 3:
+            return True
+        k = text.split(maxsplit=2)[2].strip()
+        scs = get_group_json(chat_id, "shortcuts", {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"})
+        if k in scs:
+            del scs[k]
+            set_group_json(chat_id, "shortcuts", scs)
+            bot.reply_to(m, f"▽ : ✅ تم مسح الأمر المضاف « <b>{esc(k)}</b> » بنجاح.")
+        else:
+            bot.reply_to(m, "▽ : هذا الأمر المضاف غير موجود!")
+        return True
+
+    if ntext in ("الاوامر المضافه", "الاختصارات"):
+        scs = get_group_json(chat_id, "shortcuts", {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"})
+        txt = "▽ : قائمة الأوامر المضافة والاختصارات :\n------------------\n"
+        for k, v in scs.items():
+            txt += f"▽ : <code>{esc(k)}</code> ← {esc(v)}\n"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext == "مسح الاوامر المضافه":
+        if user_rank < 4:
+            return True
+        set_group_json(chat_id, "shortcuts", {"ا": "ايدي", "ص": "صورتي", "ج": "جمالي"})
+        bot.reply_to(m, "▽ : ✅ تم مسح الأوامر المضافة مع الإبقاء على الاختصارات الأساسية (ا، ص).")
+        return True
+
+    if ntext in ("كشف", "كشف عام", "معلوماتي") or ntext.startswith("كشف "):
+        t_u = resolve_target_user(m, text) or u_data
+        t_rank = get_rank(chat_id, t_u["user_id"])
+        t_biz = get_user_businesses(t_u["user_id"])
+        biz_summary = "، ".join([f"{b['custom_name']} ({b['biz_type']})" for b in t_biz]) if t_biz else "لا يملك متجراً"
+        job_lvl_title = JOBS.get(t_u["job"], {}).get("levels", {}).get(t_u["job_level"], {}).get("title", t_u["job"])
+        base_def = HOUSES.get(t_u["house"], {"defense": 0})["defense"] + t_u["house_sec_level"]
+        bot.reply_to(
+            m,
+            f"▽ : كشف السجل المدني والممتلكات 🇱🇾\n"
+            f"------------------\n"
+            f"▽ : المواطن ← <b>{esc(t_u['name'])}</b> (<code>{t_u['user_id']}</code>)\n"
+            f"▽ : المدينة ← <b>{esc(t_u['city'])}</b>\n"
+            f"▽ : الرتبة ← <b>{RANK_NAMES.get(t_rank, 'عضو')}</b>\n"
+            f"▽ : المهنة ← <b>{esc(job_lvl_title)}</b>\n"
+            f"▽ : الكاش في الجيب ← <b>{t_u['cash']} د.ل</b> 💵\n"
+            f"▽ : الكاش في المنزل ← <b>{t_u['home_cash']} د.ل</b> 🏠\n"
+            f"▽ : رصيد المصرف ({esc(t_u['bank_name'])}) ← <b>🔒 سري لا يراه أحد</b>\n"
+            f"▽ : العقار ← <b>{esc(t_u['house'])}</b> (حماية: {base_def}%)\n"
+            f"▽ : السيارة ← <b>{esc(t_u['car'])}</b> (حالة المحرك: {t_u['car_cond']}%)\n"
+            f"▽ : المتاجر والشركات ← <b>{esc(biz_summary)}</b>\n"
+            f"▽ : الحالة الجنائية ← <b>{'🚨 مطلوب للعدالة' if t_u['wanted'] else '✅ سجل نظيف'}</b>\n"
+            f"------------------"
+        )
+        return True
+
+    if ntext in ("همسه", "همسة"):
+        if locks.get("الهمسه", False) and user_rank < 2:
+            return True
+        if not m.reply_to_message or not m.reply_to_message.from_user:
+            bot.reply_to(m, "▽ : قم بالرد على رسالة الشخص الذي تريد إرسال همسة له واكتب <code>همسه</code>")
+            return True
+        target = m.reply_to_message.from_user
+        if target.is_bot:
+            bot.reply_to(m, "▽ : لا يمكنك إرسال همسة إلى بوت!")
+            return True
+        ensure_user(target)
+        deep_url = f"https://t.me/{BOT_USERNAME}?start=whisper_{chat_id}_{user.id}_{target.id}_{m.reply_to_message.message_id}"
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("• اضغط هنا لكتابة الهمسة •", url=deep_url))
+        bot.reply_to(
+            m,
+            f"▽ : تم تحديد الهمسه الى « <a href='tg://user?id={target.id}'>{esc(target.first_name)}</a> »\n\n"
+            f"▽ : اضغط على الزر لكتابه الهمسه",
+            reply_markup=kb
+        )
+        return True
+
+    if ntext in ("تفعيل", "رفع نفسي مالك", "ترقيه نفسي", "تفعيل البوت", "ارفعني مالك", "رفع المالك"):
+        try:
+            member = bot.get_chat_member(chat_id, user.id)
+            if member.status == "creator" or user.id == ADMIN_ID:
+                set_rank(chat_id, user.id, 7)
+                bot.reply_to(
+                    m,
+                    f"▽ : تم تفعيل المجموعة بنجاح 🇱🇾\n"
+                    f"▽ : تم رفعك إلى رتبة <b>مالك اساسي 💎</b> يا {esc(u_data['name'])}"
+                )
+            elif member.status == "administrator" and member.can_promote_members:
+                set_rank(chat_id, user.id, 6)
+                bot.reply_to(m, f"▽ : تم رفعك إلى رتبة <b>المالك 👑</b> يا {esc(u_data['name'])}")
+            else:
+                bot.reply_to(m, "▽ : ❌ هذا الأمر مخصص لمنشئ المجموعة الأصلي فقط!")
+        except Exception:
+            bot.reply_to(m, "▽ : ⚠️ ارفع البوت مشرفاً في المجموعة أولاً!")
+        return True
+
+    if ntext in ("بالتقييد", "بالطرد", "بالكتم") and user_rank >= 2:
+        update_group_field(chat_id, punishment=ntext)
+        bot.reply_to(m, f"▽ : ✅ تم ضبط عقوبة مخالفة الحماية إلى ← {{ <b>{ntext}</b> }}")
+        return True
+
+    if ntext.startswith("قفل ") or ntext.startswith("فتح "):
+        act = ntext.split()[0]
+        t_lock = ntext[len(act):].strip()
+        if t_lock in ("المتجر", "متجري") or t_lock.startswith(("حساب", "مصرف", "بنك", "متجر", "مشروع", "صيدليه", "قهوه", "مطعم", "سوبرماركت", "شركه", "مستشفي", "مول", "معرض")):
+            return False
+        matched_lock = match_dict_key(LOCK_TYPES, t_lock)
+        if matched_lock:
+            if user_rank < 2:
+                bot.reply_to(m, "▽ : ❌ قفل وفتح الحماية للادمنية فما فوق فقط!")
+                return True
+            set_group_lock(chat_id, matched_lock, act == "قفل")
+            bot.reply_to(m, f"▽ : تم {'قفل 🔒' if act == 'قفل' else 'فتح 🔓'} ← {{ <b>{matched_lock}</b> }} بنجاح!")
+            return True
+
+    RANK_CMDS = {
+        "رفع مالك اساسي": (7, 7, "مالك اساسي 💎"), "تنزيل مالك اساسي": (7, 0, "عضو 🙍‍♂️"),
+        "رفع مالك": (6, 6, "المالك 👑"), "تنزيل مالك": (6, 0, "عضو 🙍‍♂️"),
+        "رفع منشئ اساسي": (6, 5, "منشئ اساسي 🏅"), "تنزيل منشئ اساسي": (6, 0, "عضو 🙍‍♂️"),
+        "رفع منشئ": (5, 4, "منشئ 🎖️"), "تنزيل منشئ": (5, 0, "عضو 🙍‍♂️"),
+        "رفع مدير": (4, 3, "مدير 💼"), "تنزيل مدير": (4, 0, "عضو 🙍‍♂️"),
+        "رفع ادمن": (3, 2, "ادمن 👮‍♂️"), "تنزيل ادمن": (3, 0, "عضو 🙍‍♂️"),
+        "رفع مميز": (2, 1, "مميز 🌟"), "تنزيل مميز": (2, 0, "عضو 🙍‍♂️"),
+    }
+    for r_cmd, (req_r, new_l, r_t) in RANK_CMDS.items():
+        if ntext == r_cmd or ntext.startswith(r_cmd + " "):
+            if user_rank < req_r:
+                bot.reply_to(m, "▽ : ❌ رتبتك لا تسمح لك بهذا الإجراء!")
+                return True
+            t_u = resolve_target_user(m, text)
+            if not t_u:
+                bot.reply_to(m, "▽ : 💡 قم بالرد على رسالة العضو أو اكتب يوزره بعد الأمر!")
+                return True
+            if t_u["user_id"] == ADMIN_ID:
+                bot.reply_to(m, "▽ : ⚡ لا يمكن تعديل رتبة المطور الأساسي MG!")
+                return True
+            set_rank(chat_id, t_u["user_id"], new_l)
+            bot.reply_to(m, f"▽ : تم تحديث رتبة <b>{esc(t_u['name'])}</b> إلى ← <b>{r_t}</b>")
+            return True
+
+    if ntext in ("رفع صديق", "تنزيل صديق") and m.reply_to_message and user_rank >= 4:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        with db_lock:
+            conn = get_db()
+            if ntext == "رفع صديق":
+                conn.execute("INSERT OR REPLACE INTO friends (chat_id, user_id, user_name) VALUES (?,?,?)", (chat_id, t_u["user_id"], t_u["name"]))
+                msg_f = f"▽ : 🤝 تم رفع <b>{esc(t_u['name'])}</b> إلى قائمة الأصدقاء!"
+            else:
+                conn.execute("DELETE FROM friends WHERE chat_id=? AND user_id=?", (chat_id, t_u["user_id"]))
+                msg_f = f"▽ : تم تنزيل <b>{esc(t_u['name'])}</b> من قائمة الأصدقاء."
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, msg_f)
+        return True
+
+    if ntext == "الاصدقاء":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT user_id, user_name FROM friends WHERE chat_id = ?", (chat_id,)).fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : لا يوجد أصدقاء مسجلون في المجموعة حالياً.")
+        else:
+            txt = "▽ : 🤝 قائمة أصدقاء المجموعة :\n------------------\n"
+            for i, r in enumerate(rows, 1):
+                txt += f"{i}. <a href='tg://user?id={r['user_id']}'>{esc(r['user_name'])}</a>\n"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext == "مسح الاصدقاء" and user_rank >= 4:
+        with db_lock:
+            conn = get_db()
+            conn.execute("DELETE FROM friends WHERE chat_id = ?", (chat_id,))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, "▽ : ✅ تم مسح قائمة الأصدقاء بنجاح.")
+        return True
+
+    if ntext in ("تنزيل الكل", "تصفير الرتب", "تنزيل جميع الرتب", "مسح القوائم", "تنظيف الرتب") and user_rank >= 6:
+        if m.reply_to_message:
+            t_u = ensure_user(m.reply_to_message.from_user)
+            if t_u["user_id"] != ADMIN_ID:
+                set_rank(chat_id, t_u["user_id"], 0)
+                bot.reply_to(m, f"▽ : ✅ تم تنزيل <b>{esc(t_u['name'])}</b> من جميع الرتب!")
+            return True
+        with db_lock:
+            conn = get_db()
+            conn.execute("UPDATE ranks SET rank_level = 0 WHERE chat_id = ? AND rank_level < 6", (chat_id,))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, "▽ : ✅ تم تنزيل جميع الرتب الفرعية في المجموعة بنجاح.")
+        return True
+
+    RANK_LIST_CMDS = {
+        "المالكين الاساسيين": (7, "💎 قائمة المالكين الأساسيين"),
+        "المالكين": (6, "👑 قائمة المالكين"),
+        "المنشئين الاساسيين": (5, "🏅 قائمة المنشئين الأساسيين"),
+        "المنشئين": (4, "🎖️ قائمة المنشئين"),
+        "المدراء": (3, "💼 قائمة المدراء"),
+        "الادمنيه": (2, "👮‍♂️ قائمة الادمنية"),
+        "المميزين": (1, "🌟 قائمة المميزين"),
+    }
+    if ntext in RANK_LIST_CMDS:
+        lvl, hdr = RANK_LIST_CMDS[ntext]
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT r.user_id, u.name FROM ranks r LEFT JOIN users u ON r.user_id = u.user_id WHERE r.chat_id = ? AND r.rank_level = ?",
+                (chat_id, lvl)
+            ).fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, f"▽ : لا يوجد أعضاء في {hdr} حالياً.")
+        else:
+            txt = f"▽ : {hdr} :\n------------------\n"
+            for idx, r in enumerate(rows, 1):
+                txt += f"{idx}. <b>{esc(r['name'] or 'مواطن')}</b> (<code>{r['user_id']}</code>)\n"
+            bot.reply_to(m, txt)
+        return True
+
+    CLEAR_RANK_CMDS = {
+        "مسح المميزين": (2, 1),
+        "مسح الادمنيه": (3, 2),
+        "مسح المدراء": (4, 3),
+        "مسح المنشئين": (5, 4),
+        "مسح المنشئين الاساسيين": (6, 5),
+        "مسح المالكين": (7, 6),
+    }
+    if ntext in CLEAR_RANK_CMDS:
+        req_r, target_l = CLEAR_RANK_CMDS[ntext]
+        if user_rank >= req_r:
+            with db_lock:
+                conn = get_db()
+                conn.execute("UPDATE ranks SET rank_level = 0 WHERE chat_id = ? AND rank_level = ?", (chat_id, target_l))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : ✅ تم تنفيذ ({ntext}) بنجاح!")
+        return True
+
+    if ntext.startswith(("منع امر ", "منع ")) and user_rank >= 5:
+        c_to_ban = norm_ar(text.split(maxsplit=2)[-1])
+        b_list = get_group_json(chat_id, "banned_cmds", [])
+        if c_to_ban not in b_list:
+            b_list.append(c_to_ban)
+            set_group_json(chat_id, "banned_cmds", b_list)
+        bot.reply_to(m, f"▽ : 🚫 تم منع الأمر « <b>{esc(c_to_ban)}</b> » في المجموعة!")
+        return True
+
+    if ntext.startswith(("الغاء منع امر ", "الغاء منع ")) and user_rank >= 5:
+        c_to_unban = norm_ar(text.split(maxsplit=2)[-1])
+        b_list = get_group_json(chat_id, "banned_cmds", [])
+        if c_to_unban in b_list:
+            b_list.remove(c_to_unban)
+            set_group_json(chat_id, "banned_cmds", b_list)
+        bot.reply_to(m, f"▽ : ✅ تم إلغاء منع الأمر « <b>{esc(c_to_unban)}</b> »!")
+        return True
+
+    if ntext in ("قائمه الاوامر الممنوعه", "قائمه المنع"):
+        b_list = get_group_json(chat_id, "banned_cmds", [])
+        if not b_list:
+            bot.reply_to(m, "▽ : لا توجد أوامر ممنوعة في المجموعة.")
+        else:
+            bot.reply_to(m, "▽ : 🚫 الأوامر الممنوعة :\n------------------\n" + "\n".join([f"• <code>{esc(x)}</code>" for x in b_list]))
+        return True
+
+    if ntext in ("مسح الاوامر الممنوعه", "مسح قائمه المنع") and user_rank >= 5:
+        set_group_json(chat_id, "banned_cmds", [])
+        bot.reply_to(m, "▽ : ✅ تم مسح قائمة الأوامر الممنوعة!")
+        return True
+
+    if ntext in ("تفعيل التوحيد", "تعطيل التوحيد") and user_rank >= 4:
+        st = 1 if ntext.startswith("تفعيل") else 0
+        update_group_field(chat_id, toheed_enabled=st)
+        bot.reply_to(m, f"▽ : تم {'تفعيل ✅' if st else 'تعطيل ❌'} نظام التوحيد في المجموعة!")
+        return True
+
+    if ntext.startswith("ضع التوحيد ") and user_rank >= 4:
+        t_word = text.split(maxsplit=2)[2].strip()
+        update_group_field(chat_id, toheed_text=t_word, toheed_enabled=1)
+        bot.reply_to(m, f"▽ : ✅ تم تعيين رمز التوحيد الإجباري ← « <b>{esc(t_word)}</b> »")
+        return True
+
+    if ntext in ("تفعيل الوضع الليلي", "تعطيل الوضع الليلي", "ضبط الحمايه") and user_rank >= 5:
+        st = 0 if ntext.startswith("تعطيل") else 1
+        update_group_field(chat_id, night_mode=st)
+        bot.reply_to(m, f"▽ : 🌙 تم {'تفعيل 🔒' if st else 'تعطيل 🔓'} الوضع الليلي والحماية المشددة!")
+        return True
+
+    if ntext.startswith("ضع التكرار ") and user_rank >= 4:
+        parts = ntext.split()
+        if parts[-1].isdigit():
+            update_group_field(chat_id, flood_limit=int(parts[-1]))
+            bot.reply_to(m, f"▽ : ✅ تم ضبط حد التكرار إلى <b>{parts[-1]}</b> رسائل.")
+        return True
+
+    if ntext.startswith(("حظر اسم ", "طرد اسم ")) and user_rank >= 3:
+        b_n = text.split(maxsplit=2)[2].strip()
+        b_names = get_group_json(chat_id, "banned_names", [])
+        if b_n not in b_names:
+            b_names.append(b_n)
+            set_group_json(chat_id, "banned_names", b_names)
+        bot.reply_to(m, f"▽ : 🚫 تم إضافة الاسم « <b>{esc(b_n)}</b> » إلى قائمة الأسماء المحظورة!")
+        return True
+
+    if ntext.startswith("الغاء حظر اسم ") and user_rank >= 3:
+        b_n = text.split(maxsplit=3)[3].strip()
+        b_names = get_group_json(chat_id, "banned_names", [])
+        if b_n in b_names:
+            b_names.remove(b_n)
+            set_group_json(chat_id, "banned_names", b_names)
+        bot.reply_to(m, f"▽ : ✅ تم إلغاء حظر الاسم « <b>{esc(b_n)}</b> »!")
+        return True
+
+    if ntext == "الاسماء المحظوره":
+        b_names = get_group_json(chat_id, "banned_names", [])
+        if not b_names:
+            bot.reply_to(m, "▽ : لا توجد أسماء محظورة حالياً.")
+        else:
+            bot.reply_to(m, "▽ : 🚫 الأسماء المحظورة :\n" + "\n".join([f"• {esc(x)}" for x in b_names]))
+        return True
+
+    if ntext == "مسح الاسماء المحظوره" and user_rank >= 3:
+        set_group_json(chat_id, "banned_names", [])
+        bot.reply_to(m, "▽ : ✅ تم مسح جميع الأسماء المحظورة!")
+        return True
+
+    if ntext in ("تاك عام", "تاك للكل", "نداء للكل", "تاك", "@all") or text.startswith("@all"):
+        if user_rank < 2:
+            bot.reply_to(m, "▽ : ❌ التاك العام مخصص للادمنية فما فوق!")
+            return True
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT user_id, name FROM users ORDER BY points DESC LIMIT 20").fetchall()
+            conn.close()
+        mentions = " ".join([f"<a href='tg://user?id={r['user_id']}'>{esc(r['name'])}</a>" for r in rows])
+        bot.reply_to(m, f"📢 <b>نداء عام لجميع أعضاء القروب :</b>\n------------------\n{mentions}")
+        return True
+
+    if ntext.startswith(("اضف رسائل ", "اضف نقاط ", "اضف سحكات ")) and m.reply_to_message and user_rank >= 3:
+        parts = ntext.split()
+        if parts[-1].isdigit():
+            val = int(parts[-1])
+            t_u = ensure_user(m.reply_to_message.from_user)
+            if "رسائل" in ntext:
+                update_user_field(t_u["user_id"], msg_count=t_u["msg_count"] + val)
+                bot.reply_to(m, f"▽ : ✅ تم إضافة <b>{val} رسالة</b> إلى <b>{esc(t_u['name'])}</b>!")
+            elif "نقاط" in ntext:
+                update_user_field(t_u["user_id"], points=t_u["points"] + val)
+                bot.reply_to(m, f"▽ : ✅ تم إضافة <b>{val} نقطة</b> إلى <b>{esc(t_u['name'])}</b>!")
+            elif "سحكات" in ntext:
+                update_user_field(t_u["user_id"], sahkat_count=t_u.get("sahkat_count", 0) + val)
+                bot.reply_to(m, f"▽ : ✅ تم إضافة <b>{val} سحكة</b> إلى <b>{esc(t_u['name'])}</b>!")
+        return True
+
+    if ntext in ("مسح نقاطه", "مسح رسائله") and m.reply_to_message and user_rank >= 4:
+        t_u = ensure_user(m.reply_to_message.from_user)
+        if "نقاطه" in ntext:
+            update_user_field(t_u["user_id"], points=0)
+            bot.reply_to(m, f"▽ : ✅ تم تصفير نقاط <b>{esc(t_u['name'])}</b>!")
+        else:
+            update_user_field(t_u["user_id"], msg_count=0)
+            bot.reply_to(m, f"▽ : ✅ تم تصفير رسائل <b>{esc(t_u['name'])}</b>!")
+        return True
+
+    if ntext.startswith("ضع لقب ") and m.reply_to_message and user_rank >= 3:
+        new_title = text.split(maxsplit=2)[2].strip()
+        target = m.reply_to_message.from_user
+        set_custom_title(chat_id, target.id, new_title)
+        bot.reply_to(m, f"▽ : تم تعيين اللقب « <b>{esc(new_title)}</b> » للعضو بنجاح!")
+        return True
+
+    if ntext.startswith("اضف رد ") and "=" in text and user_rank >= 3:
+        raw = text.split(maxsplit=2)[2].strip()
+        k, v = [x.strip() for x in raw.split("=", 1)]
+        if k and v:
+            reps = get_group_json(chat_id, "replies", {})
+            reps[k] = v
+            set_group_json(chat_id, "replies", reps)
+            bot.reply_to(m, f"▽ : تم حفظ الرد بنجاح!\n▽ : الكلمة ← « {esc(k)} »\n▽ : الجواب ← « {esc(v)} »")
+        return True
+
+    if ntext.startswith("مسح رد ") and user_rank >= 3:
+        k = text.split(maxsplit=2)[2].strip()
+        reps = get_group_json(chat_id, "replies", {})
+        if k in reps:
+            del reps[k]
+            set_group_json(chat_id, "replies", reps)
+            bot.reply_to(m, f"▽ : تم حذف الرد « {esc(k)} » بنجاح.")
+        return True
+
+    if ntext in ("الردود", "قائمه الردود"):
+        reps = get_group_json(chat_id, "replies", {})
+        if not reps:
+            bot.reply_to(m, "▽ : لا توجد ردود مضافة في المجموعة حالياً.")
+        else:
+            txt = "▽ : قائمة ردود المجموعة :\n------------------\n"
+            for k, v in reps.items():
+                txt += f"▽ : <code>{esc(k)}</code> ~ {esc(v)}\n"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext == "مسح الردود" and user_rank >= 3:
+        set_group_json(chat_id, "replies", {})
+        bot.reply_to(m, "▽ : تم مسح جميع ردود المجموعة بنجاح.")
+        return True
+
+    if ntext.startswith(("ضع ترحيب ", "وضع الترحيب ")) and user_rank >= 3:
+        w_t = text.split(maxsplit=2)[2].strip()
+        update_group_field(chat_id, welcome_text=w_t)
+        bot.reply_to(m, "▽ : ✅ تم تحديث رسالة الترحيب للمجموعة بنجاح!")
+        return True
+
+    if ntext.startswith(("ضع قوانين ", "وضع قوانين ")) and user_rank >= 3:
+        r_t = text.split(maxsplit=2)[2].strip()
+        update_group_field(chat_id, rules_text=r_t)
+        bot.reply_to(m, "▽ : ✅ تم حفظ قوانين المجموعة بنجاح!")
+        return True
+
+    if ntext in ("القوانين", "الترحيب"):
+        if ntext == "القوانين":
+            bot.reply_to(m, f"▽ : قوانين المجموعة :\n------------------\n{esc(grp_data.get('rules_text', ''))}")
+        else:
+            bot.reply_to(m, f"▽ : رسالة الترحيب :\n------------------\n{esc(grp_data.get('welcome_text', ''))}")
+        return True
+
+    if ntext in ("انشاء رابط", "الرابط", "رابط المجموعه"):
+        try:
+            inv = bot.export_chat_invite_link(chat_id)
+            bot.reply_to(m, f"▽ : 🔗 رابط المجموعة الرسمي :\n{inv}")
+        except Exception:
+            bot.reply_to(m, "▽ : ⚠️ تأكد من منح البوت صلاحية دعوة المستخدمين عبر الرابط!")
+        return True
+
+    if ntext in ("حظر", "الغاء حظر", "طرد", "كتم", "الغاء كتم", "تقييد", "الغاء تقييد", "رفع القيود", "انذار", "حذف الانذارات") and m.reply_to_message:
+        if user_rank < 2:
+            bot.reply_to(m, "▽ : ❌ أوامر الحظر والكتم والطرد مخصصة للادمنية فما فوق فقط!")
+            return True
+        target = m.reply_to_message.from_user
+        if get_rank(chat_id, target.id) >= user_rank and user.id != ADMIN_ID:
+            bot.reply_to(m, "▽ : ❌ لا يمكنك تطبيق العقوبة على رتبة مساوية أو أعلى منك!")
+            return True
+        try:
+            if ntext == "حظر":
+                bot.ban_chat_member(chat_id, target.id)
+                bot.reply_to(m, f"▽ : 🚫 تم حظر <b>{esc(target.first_name)}</b> من المجموعة!")
+            elif ntext == "الغاء حظر":
+                bot.unban_chat_member(chat_id, target.id)
+                bot.reply_to(m, f"▽ : ✅ تم إلغاء حظر <b>{esc(target.first_name)}</b>!")
+            elif ntext == "طرد":
+                bot.ban_chat_member(chat_id, target.id)
+                bot.unban_chat_member(chat_id, target.id)
+                bot.reply_to(m, f"▽ : 👞 تم طرد <b>{esc(target.first_name)}</b> من المجموعة!")
+            elif ntext in ("كتم", "تقييد"):
+                bot.restrict_chat_member(chat_id, target.id, can_send_messages=False)
+                bot.reply_to(m, f"▽ : 🔇 تم {ntext} <b>{esc(target.first_name)}</b>!")
+            elif ntext in ("الغاء كتم", "الغاء تقييد", "رفع القيود"):
+                bot.restrict_chat_member(chat_id, target.id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True)
+                bot.reply_to(m, f"▽ : 🔊 تم إلغاء قيود وكتم <b>{esc(target.first_name)}</b>!")
+            elif ntext == "انذار":
+                with db_lock:
+                    conn = get_db()
+                    row = conn.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?", (chat_id, target.id)).fetchone()
+                    cnt = (row["count"] if row else 0) + 1
+                    conn.execute(
+                        "INSERT INTO warnings (chat_id, user_id, count) VALUES (?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET count=?",
+                        (chat_id, target.id, cnt, cnt)
+                    )
+                    conn.commit()
+                    conn.close()
+                if cnt >= 3:
+                    bot.restrict_chat_member(chat_id, target.id, can_send_messages=False)
+                    bot.reply_to(m, f"▽ : ⚠️ وصل <b>{esc(target.first_name)}</b> إلى (3/3) إنذارات وتم كتمه تلقائياً!")
+                else:
+                    bot.reply_to(m, f"▽ : ⚠️ تم توجيه إنذار إلى <b>{esc(target.first_name)}</b> ({cnt}/3)!")
+            elif ntext == "حذف الانذارات":
+                with db_lock:
+                    conn = get_db()
+                    conn.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?", (chat_id, target.id))
+                    conn.commit()
+                    conn.close()
+                bot.reply_to(m, f"▽ : ✅ تم مسح جميع إنذارات <b>{esc(target.first_name)}</b>!")
+        except Exception:
+            bot.reply_to(m, "▽ : ⚠️ تأكد من منح البوت صلاحيات المشرف الكاملة!")
+        return True
+
+    if ntext in ("تثبيت", "الغاء تثبيت") and m.reply_to_message and user_rank >= 2:
+        try:
+            if ntext == "تثبيت":
+                bot.pin_chat_message(chat_id, m.reply_to_message.message_id)
+                bot.reply_to(m, "▽ : 📌 تم تثبيت الرسالة بنجاح!")
+            else:
+                bot.unpin_chat_message(chat_id, m.reply_to_message.message_id)
+                bot.reply_to(m, "▽ : 📌 تم إلغاء تثبيت الرسالة!")
+        except Exception:
+            pass
+        return True
+
+    if ntext == "فحص البوت":
+        bot.reply_to(m, "▽ : ✅ البوت يعمل بكفاءة 100% وصلاحيات الإشراف مفعلة!")
+        return True
+
+    if ntext == "اطردني" and user_rank < 2:
+        try:
+            bot.ban_chat_member(chat_id, user.id)
+            bot.unban_chat_member(chat_id, user.id)
+        except Exception:
+            pass
+        return True
+
+    if ntext.startswith("مسح") and not ntext.startswith(("مسح رد", "مسح اختصار", "مسح امر", "مسح الاوامر", "مسح لايك", "مسح الايدي", "مسح الاسماء", "مسح قائمه", "مسح الاصدقاء", "مسح نقاط")):
+        if user_rank < 2:
+            bot.reply_to(m, "▽ : ❌ مسح الرسائل مخصص للادمنية فما فوق فقط!")
+            return True
+        if m.reply_to_message and ntext == "مسح":
+            try:
+                bot.delete_message(chat_id, m.reply_to_message.message_id)
+                bot.delete_message(chat_id, m.message_id)
+            except Exception:
+                pass
+            return True
+        parts = ntext.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            cnt = min(int(parts[1]), 50)
+            for mid in range(m.message_id, m.message_id - cnt - 1, -1):
+                try:
+                    bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
+            return True
+
+    return False

@@ -2835,3 +2835,1979 @@ def handle_admin_and_info_cmds(m: types.Message, text: str, u_data: dict, grp_da
     return False
 
 # ==================== نهاية القسم الثالث ====================
+# ==================== بداية القسم الرابع ====================
+
+def parse_open_business(raw_text: str, default_owner_name: str) -> tuple[str | None, str]:
+    nt = norm_ar(raw_text)
+    for prefix in ("فتح مشروع ", "فتح متجر ", "فتح محل ", "انشاء متجر ", "انشاء مشروع ", "فتح "):
+        if nt.startswith(prefix):
+            rest_norm = nt[len(prefix):].strip()
+            rest_orig = raw_text.strip()[len(prefix):].strip() if len(raw_text.strip()) >= len(prefix) else rest_norm
+            break
+    else:
+        return None, ""
+
+    if "=" in rest_orig:
+        t_part, n_part = [x.strip() for x in rest_orig.split("=", 1)]
+        t_norm = norm_ar(t_part)
+    else:
+        t_norm = rest_norm
+        n_part = ""
+
+    aliases = [
+        ("متجر عطور", ["متجر عطور", "محل عطور", "عطور", "عطر"]),
+        ("متجر مواد منزليه", ["متجر مواد منزليه", "محل مواد منزليه", "مواد منزليه", "منزليه"]),
+        ("متجر ملابس", ["متجر ملابس", "محل ملابس", "ملابس"]),
+        ("صيدليه", ["صيدليه", "صيدلية"]),
+        ("قهوه", ["قهوه", "مقهي", "كافيه", "كافي"]),
+        ("مطعم", ["مطعم", "مشاوي"]),
+        ("سوبرماركت", ["سوبرماركت", "سوبر ماركت", "اسواق", "غذائيه"]),
+        ("شركه برمجيات", ["شركه برمجيات", "شركه تقنيه", "شركه", "برمجيات"]),
+        ("مستشفي خاص", ["مستشفي خاص", "مستشفي", "مصحه"]),
+        ("مول تجاري", ["مول تجاري", "مول", "مركز تسوق"]),
+        ("معرض سيارات", ["معرض سيارات", "معرض"]),
+    ]
+
+    matched_catalog_key = None
+    custom_name = n_part
+
+    for cat_norm, words in aliases:
+        for w in words:
+            if t_norm == w or t_norm.startswith(w + " "):
+                for orig_k in BUSINESS_CATALOG.keys():
+                    if norm_ar(orig_k) == cat_norm:
+                        matched_catalog_key = orig_k
+                        break
+                if not custom_name and len(t_norm) > len(w):
+                    custom_name = rest_orig[len(w):].strip(" =-")
+                break
+        if matched_catalog_key:
+            break
+
+    if not matched_catalog_key:
+        return None, ""
+
+    if not custom_name:
+        custom_name = f"{matched_catalog_key} {default_owner_name}"
+
+    return matched_catalog_key, custom_name
+
+
+def handle_economy_and_games_cmds(m: types.Message, text: str, u_data: dict, now: int) -> bool:
+    user = m.from_user
+    chat_id = m.chat.id
+    ntext = norm_ar(text)
+
+    if user.id in pending_bank_creation:
+        exp = pending_bank_creation.pop(user.id)
+        if now <= exp and len(text) <= 35:
+            ntext = f"فتح مصرف خاص {text}"
+            text = f"فتح مصرف خاص {text}"
+
+    # التقاط تحديد المهر من العروس بعد قبولها المبدئي للخطبة
+    m_key = f"{chat_id}_{user.id}"
+    if m_key in pending_marriage and pending_marriage[m_key].get("step") == "wait_dowry":
+        pm = pending_marriage[m_key]
+        if now > pm.get("expires", 0):
+            del pending_marriage[m_key]
+        else:
+            nums = [int(x) for x in ntext.split() if x.isdigit()]
+            if nums:
+                dowry_val = nums[0]
+                if dowry_val < 100:
+                    bot.reply_to(m, "▽ : 😂 يا عروسة المهر ما يقلش عن 100 د.ل! اكتبي رقم معقول (مثال: <code>5000</code>).")
+                    return True
+                pm["dowry"] = dowry_val
+                pm["step"] = "wait_groom"
+                pm["expires"] = now + 300
+                kb = types.InlineKeyboardMarkup(row_width=2)
+                kb.add(
+                    types.InlineKeyboardButton(f"✅ موافق وندفع ({dowry_val} د.ل)", callback_data=f"mar_g_yes:{chat_id}:{user.id}"),
+                    types.InlineKeyboardButton("🏃‍♂️ رفض (المهر غالي!)", callback_data=f"mar_g_no:{chat_id}:{user.id}")
+                )
+                bot.reply_to(
+                    m,
+                    f"💍📋 <b>العروسة حددت المهر الشرعي!</b>\n"
+                    f"------------------\n"
+                    f"▽ : العروسة ← <b>{esc(u_data['name'])}</b>\n"
+                    f"▽ : المهر المطلوب ← <b>{dowry_val} د.ل</b> 💵\n"
+                    f"▽ : يا عريسنا <a href='tg://user?id={pm['groom_id']}'>{esc(pm['groom_name'])}</a>، الكلمة عندك توا: تقبل وتدفع المهر ولا تهرب؟ 😂👇",
+                    reply_markup=kb
+                )
+                return True
+
+    # ─────────────── 1. نظام الحبس والهروب والكفالة ───────────────
+    if ntext == "تهريب" and m.reply_to_message:
+        friend = ensure_user(m.reply_to_message.from_user)
+        if friend["user_id"] == user.id:
+            bot.reply_to(m, "▽ : 😂 ما تقدرش تهرب روحك يا فالح! اكتب <code>دفع كفاله</code> أو <code>رشوه العساس</code>.")
+            return True
+        if friend["jail_until"] <= now:
+            bot.reply_to(m, f"▽ : المواطن <b>{esc(friend['name'])}</b> حر طليق ومش محبوس!")
+            return True
+        if random.randint(1, 100) <= 70:
+            update_user_field(friend["user_id"], jail_until=0, wanted=0)
+            bot.reply_to(
+                m,
+                f"🚁🔥 <b>عملية تهريب ليبية أسطورية ناجحة!</b>\n"
+                f"▽ : فزع الذئب <b>{esc(u_data['name'])}</b> وهرّب صاحبه <b>{esc(friend['name'])}</b> من الحبس!"
+            )
+        else:
+            fine = min(200, u_data["cash"])
+            update_user_field(user.id, cash=u_data["cash"] - fine)
+            bot.reply_to(m, f"🚨 فشلت محاولة التهريب! شدّك العساس وخالفك بمبلغ {fine} د.ل.")
+        return True
+
+    if u_data["jail_until"] > now:
+        rem_sec = u_data["jail_until"] - now
+        rem_min = max(1, (rem_sec + 59) // 60)
+
+        if ntext in ("دفع كفاله", "كفاله", "طلوع كفاله"):
+            bail = 500
+            if u_data["cash"] >= bail:
+                update_user_field(user.id, cash=u_data["cash"] - bail, jail_until=0, wanted=0)
+                bot.reply_to(m, f"▽ : ⚖️ دفعت <b>{bail} د.ل</b> كفالة من جيبك وطلعت براءة طول!")
+            elif u_data["bank_balance"] >= bail:
+                update_user_field(user.id, bank_balance=u_data["bank_balance"] - bail, jail_until=0, wanted=0)
+                bot.reply_to(m, f"▽ : ⚖️ تم خصم <b>{bail} د.ل</b> كفالة من مصرفك وطلعت براءة طول!")
+            else:
+                bot.reply_to(m, f"▽ : ❌ ما عندكش {bail} د.ل باش تدفع الكفالة! خلي صاحبك يرد عليك بكلمة <code>تهريب</code>.")
+            return True
+
+        if ntext in ("رشوه العساس", "رشوه"):
+            bribe = 300
+            if u_data["cash"] < bribe:
+                bot.reply_to(m, f"▽ : ❌ تبي <b>{bribe} د.ل</b> كاش في جيبك باش ترشي العساس!")
+                return True
+            if random.randint(1, 100) <= 65:
+                update_user_field(user.id, cash=u_data["cash"] - bribe, jail_until=0, wanted=0)
+                bot.reply_to(m, "▽ : 🤫 العساس دس الـ 300 د.ل في جيبه وفتحلك الباب الخلفي.. اهرب قبل ما يشوفك الضابط!")
+            else:
+                update_user_field(user.id, cash=u_data["cash"] - bribe, jail_until=u_data["jail_until"] + 120)
+                bot.reply_to(m, "▽ : 🚨 العساس طلع نزيه وصادر الـ 300 د.ل وزادك دقيقتين في الحبس!")
+            return True
+
+        if ntext not in ("حسابي", "فلوسي", "البنك", "رصيدي", "وظيفتي", "مهنتي"):
+            bot.reply_to(
+                m,
+                f"⛓️ <b>أنت موقوف في المركز توا يا غالي!</b>\n"
+                f"------------------\n"
+                f"▽ : الوقت المتبقي للطلوع ← <b>{rem_min} دقيقة</b>\n"
+                f"▽ : باش تطلع توا اكتب: <code>دفع كفاله</code> أو <code>رشوه العساس</code> أو خلي صاحبك يرد عليك بـ <code>تهريب</code>"
+            )
+            return True
+
+    # ─────────────── 2. المصارف، البطاقات (VIP)، الصكوك المصدقة، الودائع، والمصارف الخاصة ───────────────
+    if ntext in (
+        "انشاء حساب", "انشاء حساب بنكي", "فتح حساب", "فتح حساب بنكي",
+        "حساب جديد", "تغيير البنك", "تغيير المصرف", "المصارف", "بنك"
+    ):
+        bot.reply_to(
+            m,
+            "▽ : اختار المصرف الليبي من الأزرار لوطة باش تفتح حسابك أو تنقل حسابك ليه مجاناً :",
+            reply_markup=build_banks_kb(user.id)
+        )
+        return True
+
+    if ntext.startswith(("انشاء حساب ", "فتح حساب ", "تغيير البنك ", "تغيير المصرف ")):
+        b_match = match_dict_key(OFFICIAL_BANKS, text)
+        if b_match:
+            def_br = OFFICIAL_BANKS[b_match]["branches"][0]
+            update_user_field(user.id, bank_name=b_match, bank_branch=def_br)
+            log_bank_action(user.id, f"فتح/نقل حساب إلى {b_match}")
+            bot.reply_to(
+                m,
+                f"▽ : 🏦 تم فتح/نقل حسابك إلى <b>{esc(b_match)}</b> ({esc(def_br)}) بنجاح!\n"
+                f"▽ : اكتب <code>الفروع</code> لتغيير الفرع، أو <code>بطاقاتي</code> لترقية بطاقتك إلى VIP.",
+                reply_markup=build_bank_secret_kb(user.id)
+            )
+            return True
+
+    if ntext in ("الفروع", "فروع المصرف", "تغيير الفرع"):
+        if u_data["bank_name"] == "بدون مصرف":
+            bot.reply_to(m, "▽ : ❌ افتح حساب بالأول بكتابة <code>انشاء حساب</code>!", reply_markup=build_banks_kb(user.id))
+            return True
+        b_idx = OFFICIAL_BANKS.get(u_data["bank_name"], {}).get("idx", 0)
+        bot.reply_to(
+            m,
+            f"▽ : فروع ({esc(u_data['bank_name'])}) المتاحة للسحب والإيداع الفوري :",
+            reply_markup=build_branches_kb(user.id, b_idx)
+        )
+        return True
+
+    if ntext in ("حسابي", "فلوسي", "البنك", "رصيدي", "اموالي"):
+        card_type = u_data.get("bank_card", "عادي")
+        card_badge = BANK_CARDS.get(card_type, BANK_CARDS["عادي"])["badge"]
+        acc_str = "مميز 🌟" if u_data.get("account_type") == "مميز" or user.id == ADMIN_ID else "عادي"
+        bot.reply_to(
+            m,
+            f"▽ : البطاقة المصرفية الذكية 🇱🇾\n"
+            f"------------------\n"
+            f"▽ : العميل ← <b>{esc(u_data['name'])}</b>\n"
+            f"▽ : نوع الحساب ← <b>{acc_str} ({esc(card_badge)})</b>\n"
+            f"▽ : المدينة ← <b>{esc(u_data['city'])}</b>\n"
+            f"▽ : المصرف ← <b>{esc(u_data['bank_name'])}</b>\n"
+            f"▽ : الفرع ← <b>{esc(u_data['bank_branch'])}</b>\n"
+            f"▽ : الكاش في الجيب (ظاهر) ← <b>{u_data['cash']} د.ل</b> 💵\n"
+            f"▽ : الكاش في الحوش (ظاهر) ← <b>{u_data['home_cash']} د.ل</b> 🏠\n"
+            f"▽ : رصيد المصرف والودائع ← <b>🔒 مشفر (خاص بيك)</b>\n"
+            f"------------------\n"
+            f"▽ : اضغط الزر لوطة باش تكشف رصيدك المصرفي السري أو ترقي بطاقتك :",
+            reply_markup=build_bank_secret_kb(user.id)
+        )
+        return True
+
+    if ntext in ("بطاقاتي", "بطاقتي", "ترقيه بطاقتي", "بطاقه مصرفيه", "ترقيه البطاقه"):
+        cur_c = u_data.get("bank_card", "عادي")
+        c_info = BANK_CARDS.get(cur_c, BANK_CARDS["عادي"])
+        txt = (
+            f"▽ : 💳 <b>نظام البطاقات المصرفية المطور :</b>\n"
+            f"▽ : بطاقتك الحالية ← <b>{esc(c_info['badge'])}</b>\n"
+            f"------------------\n"
+            f"• <b>فضي 🥈</b> (15,000 د.ل): خصم 30% من عمولة المصرف | قرض حتى 40 ألف | ربح وديعة 18%\n"
+            f"• <b>ذهبي 🥇</b> (45,000 د.ل): خصم 60% من عمولة المصرف | قرض حتى 100 ألف | ربح وديعة 25%\n"
+            f"• <b>VIP ماسي 💎</b> (120,000 د.ل): إعفاء 100% من عمولة المصرف | قرض حتى 300 ألف | ربح وديعة 35%\n"
+            f"------------------\n"
+            f"▽ : اختار البطاقة من الأزرار لوطة لترقية حسابك طول :"
+        )
+        bot.reply_to(m, txt, reply_markup=build_cards_kb(user.id))
+        return True
+
+    if ntext.startswith(("ايداع ", "حط فلوس ")) and not ntext.startswith("ايداع بالبيت"):
+        if u_data["bank_name"] == "بدون مصرف":
+            bot.reply_to(m, "▽ : ❌ افتح حساب بالأول بكتابة <code>انشاء حساب</code>!", reply_markup=build_banks_kb(user.id))
+            return True
+        arg = ntext.split()[-1]
+        amt = u_data["cash"] if arg == "الكل" else (int(arg) if arg.isdigit() else 0)
+        if amt <= 0 or amt > u_data["cash"]:
+            bot.reply_to(m, "▽ : ❌ المبلغ غلط أو الكاش في جيبك ما يكفيش!")
+            return True
+        base_fee_pct = OFFICIAL_BANKS.get(u_data["bank_name"], {}).get("fee", 1.5)
+        with db_lock:
+            conn = get_db()
+            cb = conn.execute("SELECT * FROM custom_banks WHERE bank_name = ?", (u_data["bank_name"],)).fetchone()
+            if cb:
+                base_fee_pct = cb["fee_pct"]
+            conn.close()
+        discount = BANK_CARDS.get(u_data.get("bank_card", "عادي"), BANK_CARDS["عادي"])["fee_discount"]
+        if u_data.get("account_type") == "مميز":
+            discount = max(discount, 0.50)
+        eff_fee_pct = round(base_fee_pct * (1.0 - discount), 2)
+        fee = int(amt * (eff_fee_pct / 100.0)) if eff_fee_pct > 0 else 0
+        net_amt = amt - fee
+        update_user_field(user.id, cash=u_data["cash"] - amt, bank_balance=u_data["bank_balance"] + net_amt)
+        log_bank_action(user.id, f"إيداع +{net_amt} د.ل عبر {u_data['bank_branch']}")
+        if cb and fee > 0:
+            with db_lock:
+                conn = get_db()
+                conn.execute("UPDATE custom_banks SET vault = vault + ? WHERE id = ?", (fee, cb["id"]))
+                conn.commit()
+                conn.close()
+        bot.reply_to(
+            m,
+            f"▽ : ✅ تم إيداع <b>{net_amt} د.ل</b> عبر ({esc(u_data['bank_branch'])})!\n"
+            f"▽ : عمولة المصرف ({eff_fee_pct}%) ← <b>{fee} د.ل</b>\n"
+            f"▽ : الكاش المتبقي في جيبك ← <b>{u_data['cash'] - amt} د.ل</b>\n"
+            f"▽ : رصيد المصرف ← <b>🔒 محفوظ سرياً</b>",
+            reply_markup=build_bank_secret_kb(user.id)
+        )
+        return True
+
+    if ntext.startswith(("سحب ", "طلع فلوس ")) and not ntext.startswith(("سحب من البيت", "سحب ارباح", "سحب سياره", "سحب عقار", "سحب متجر", "سحب مصرف")):
+        if u_data["bank_name"] == "بدون مصرف":
+            bot.reply_to(m, "▽ : ❌ افتح حساب بالأول بكتابة <code>انشاء حساب</code>!", reply_markup=build_banks_kb(user.id))
+            return True
+        arg = ntext.split()[-1]
+        amt = u_data["bank_balance"] if arg == "الكل" else (int(arg) if arg.isdigit() else 0)
+        if amt <= 0 or amt > u_data["bank_balance"]:
+            bot.reply_to(m, "▽ : ❌ رصيدك في المصرف ما يكفيش للسحب يا غالي!")
+            return True
+        new_cash = u_data["cash"] + amt
+        new_bank = u_data["bank_balance"] - amt
+        update_user_field(user.id, cash=new_cash, bank_balance=new_bank)
+        log_bank_action(user.id, f"سحب -{amt} د.ل من {u_data['bank_branch']}")
+        bot.reply_to(
+            m,
+            f"▽ : 💵 تم سحب <b>{amt} د.ل</b> من فرع ({esc(u_data['bank_branch'])}) إلى جيبك!\n"
+            f"▽ : الكاش في جيبك توا ← <b>{new_cash} د.ل</b> (رد بالك من الحرامية!)",
+            reply_markup=build_bank_secret_kb(user.id)
+        )
+        return True
+
+    if ntext.startswith("تحويل ") and m.reply_to_message:
+        parts = ntext.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            amt = int(parts[1])
+            target = ensure_user(m.reply_to_message.from_user)
+            if target["user_id"] == user.id or amt <= 0:
+                return True
+            if u_data["bank_balance"] < amt:
+                bot.reply_to(m, "▽ : ❌ رصيدك في المصرف ما يكفيش للتحويل!")
+                return True
+            discount = BANK_CARDS.get(u_data.get("bank_card", "عادي"), BANK_CARDS["عادي"])["fee_discount"]
+            fee = int(amt * 0.01 * (1.0 - discount))
+            net = amt - fee
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - amt)
+            update_user_field(target["user_id"], bank_balance=target["bank_balance"] + net)
+            log_bank_action(user.id, f"تحويل -{amt} د.ل إلى {target['name']}")
+            log_bank_action(target["user_id"], f"استلام حوالة +{net} د.ل من {u_data['name']}")
+            bot.reply_to(
+                m,
+                f"▽ : 💸 تمت الحوالة المصرفية بنجاح!\n"
+                f"▽ : من ← <b>{esc(u_data['name'])}</b>\n"
+                f"▽ : إلى ← <b>{esc(target['name'])}</b>\n"
+                f"▽ : الصافي المحول ← <b>{net} د.ل</b> (العمولة: {fee} د.ل)"
+            )
+        return True
+
+    if ntext.startswith(("اصدار صك ", "حرر صك ", "صنع كود ")):
+        parts = ntext.split()
+        if parts[-1].isdigit():
+            amt = int(parts[-1])
+            if amt < 500 or u_data["bank_balance"] < amt:
+                bot.reply_to(m, "▽ : ❌ لإصدار صك مصدق لازم المبلغ ما يقلش عن 500 د.ل ويكون متوفر في مصرفك!")
+                return True
+            chk_code = f"CHK-{random.randint(10000, 99999)}"
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - amt)
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO bank_checks (check_code, issuer_id, issuer_name, bank_name, amount, claimed_by, created_at) VALUES (?,?,?,?,?,0,?)",
+                    (chk_code, user.id, u_data["name"], u_data["bank_name"], amt, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                )
+                conn.commit()
+                conn.close()
+            log_bank_action(user.id, f"إصدار صك مصدق ({chk_code}) بقيمة {amt} د.ل")
+            bot.reply_to(
+                m,
+                f"🧾🏦 <b>صك مصرفي مصدق — {esc(u_data['bank_name'])}</b>\n"
+                f"------------------\n"
+                f"▽ : المُصدِر ← <b>{esc(u_data['name'])}</b>\n"
+                f"▽ : القيمة المالية ← <b>{amt} د.ل</b>\n"
+                f"▽ : رمز الصك ← <code>{chk_code}</code>\n"
+                f"------------------\n"
+                f"▽ : لصرف هدا الصك في أي وقت اكتب:\n<code>صرف صك {chk_code}</code>"
+            )
+        return True
+
+    if ntext.startswith(("صرف صك ", "تمويل ")):
+        code = text.split()[-1].strip().upper()
+        with db_lock:
+            conn = get_db()
+            row = conn.execute("SELECT * FROM bank_checks WHERE check_code = ?", (code,)).fetchone()
+            if not row or row["claimed_by"] != 0:
+                conn.close()
+                bot.reply_to(m, "▽ : ❌ رقم الصك المصدق غلط أو مصروف من قبل!")
+                return True
+            amt = row["amount"]
+            issuer_n = row["issuer_name"]
+            b_n = row["bank_name"]
+            conn.execute("UPDATE bank_checks SET claimed_by = ? WHERE check_code = ?", (user.id, code))
+            conn.commit()
+            conn.close()
+        update_user_field(user.id, bank_balance=u_data["bank_balance"] + amt)
+        log_bank_action(user.id, f"صرف صك مصدق ({code}) بقيمة +{amt} د.ل")
+        bot.reply_to(
+            m,
+            f"▽ : ✅🧾 <b>تم صرف الصك المصدق بنجاح!</b>\n"
+            f"▽ : المصرف المسحوب عليه ← <b>{esc(b_n)}</b>\n"
+            f"▽ : المحرر من ← <b>{esc(issuer_n)}</b>\n"
+            f"▽ : انضافت <b>{amt} د.ل</b> إلى رصيدك المصرفي السري 🔒!"
+        )
+        return True
+
+    if ntext.startswith(("وديعه ", "ربط وديعه ")):
+        parts = ntext.split()
+        if parts[-1].isdigit():
+            amt = int(parts[-1])
+            if u_data.get("deposit_amount", 0) > 0:
+                bot.reply_to(m, "▽ : ❌ عندك وديعة استثمارية شغالة توا! اكتب <code>استلام وديعه</code> بالأول.")
+                return True
+            if amt < 2000 or u_data["bank_balance"] < amt:
+                bot.reply_to(m, "▽ : ❌ أقل مبلغ لربط وديعة استثمارية هو 2000 د.ل من رصيدك المصرفي!")
+                return True
+            bonus_pct = int(BANK_CARDS.get(u_data.get("bank_card", "عادي"), BANK_CARDS["عادي"])["deposit_bonus"] * 100)
+            update_user_field(
+                user.id,
+                bank_balance=u_data["bank_balance"] - amt,
+                deposit_amount=amt,
+                deposit_until=now + 1200
+            )
+            log_bank_action(user.id, f"ربط وديعة استثمارية بقيمة {amt} د.ل")
+            bot.reply_to(
+                m,
+                f"▽ : 📈🏦 <b>تم ربط وديعة مرابحة استثمارية بنجاح!</b>\n"
+                f"------------------\n"
+                f"▽ : المبلغ المستثمر ← <b>{amt} د.ل</b>\n"
+                f"▽ : نسبة العائد لبطاقتك ← <b>+{bonus_pct}%</b>\n"
+                f"▽ : موعد الاستحقاق ← <b>بعد 20 دقيقة</b> (اكتب <code>استلام وديعه</code> لاستلام أصل المبلغ + الأرباح!)."
+            )
+        return True
+
+    if ntext in ("استلام وديعه", "فك وديعه", "وديعتي"):
+        dep_amt = u_data.get("deposit_amount", 0)
+        dep_until = u_data.get("deposit_until", 0)
+        if dep_amt <= 0:
+            bot.reply_to(m, "▽ : ❌ ما عندكش وديعة استثمارية شغالة! لربط وديعة اكتب: <code>وديعه 10000</code>.")
+            return True
+        if now < dep_until:
+            rem_m = (dep_until - now) // 60 + 1
+            bot.reply_to(m, f"▽ : ⏳ وديعتك (<b>{dep_amt} د.ل</b>) مازال تستثمر! فاضل <b>{rem_m} دقيقة</b> لاستحقاق الأرباح.")
+            return True
+        bonus_rate = BANK_CARDS.get(u_data.get("bank_card", "عادي"), BANK_CARDS["عادي"])["deposit_bonus"]
+        profit = int(dep_amt * bonus_rate)
+        total_ret = dep_amt + profit
+        update_user_field(user.id, bank_balance=u_data["bank_balance"] + total_ret, deposit_amount=0, deposit_until=0)
+        log_bank_action(user.id, f"استلام وديعة استثمارية +{total_ret} د.ل (الربح: {profit} د.ل)")
+        bot.reply_to(
+            m,
+            f"▽ : 🎉🏦 <b>كملت دورة الوديعة الاستثمارية بنجاح!</b>\n"
+            f"------------------\n"
+            f"▽ : أصل الوديعة ← <b>{dep_amt} د.ل</b>\n"
+            f"▽ : الأرباح الصافية ← <b>+{profit} د.ل</b>\n"
+            f"▽ : تم إيداع الإجمالي (<b>{total_ret} د.ل</b>) في رصيدك المصرفي السري 🔒!"
+        )
+        return True
+
+    if ntext in ("سجل المصرف", "سجل البنك", "كشف العمليات"):
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT * FROM bank_logs WHERE user_id = ? ORDER BY id DESC LIMIT 10", (user.id,)).fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : ما فيش عمليات مصرفية مسجلة في حسابك لتوا.")
+        else:
+            txt = f"▽ : 📋 <b>آخر العمليات المصرفية للعميل ({esc(u_data['name'])}) :</b>\n------------------\n"
+            for r in rows:
+                txt += f"• [{r['timestamp']}] ← {esc(r['action_text'])}\n"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith("قرض"):
+        parts = ntext.split()
+        max_l = BANK_CARDS.get(u_data.get("bank_card", "عادي"), BANK_CARDS["عادي"])["max_loan"]
+        amt = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else max_l
+        amt = min(amt, max_l)
+        if u_data["loan"] > 0:
+            bot.reply_to(m, f"▽ : ❌ عليك قرض سابق بقيمة {u_data['loan']} د.ل! سدده بالأول بكتابة <code>تسديد القرض</code>.")
+            return True
+        update_user_field(user.id, bank_balance=u_data["bank_balance"] + amt, loan=amt)
+        log_bank_action(user.id, f"استلام قرض مصرفي بقيمة {amt} د.ل")
+        bot.reply_to(m, f"▽ : 🏦 تم منحك قرض مصرفي بقيمة <b>{amt} د.ل</b> وإضافته لرصيدك السري!")
+        return True
+
+    if ntext in ("تسديد القرض", "سداد القرض"):
+        if u_data["loan"] <= 0:
+            bot.reply_to(m, "▽ : ما عليكش أي قروض مصرفية حالياً!")
+            return True
+        if u_data["bank_balance"] >= u_data["loan"]:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - u_data["loan"], loan=0)
+            log_bank_action(user.id, f"سداد قرض بقيمة {u_data['loan']} د.ل")
+            bot.reply_to(m, "▽ : ✅ تم تسديد القرض بالكامل من رصيدك المصرفي!")
+        elif u_data["cash"] >= u_data["loan"]:
+            update_user_field(user.id, cash=u_data["cash"] - u_data["loan"], loan=0)
+            bot.reply_to(m, "▽ : ✅ تم تسديد القرض بالكامل من كاش جيبك!")
+        else:
+            bot.reply_to(m, f"▽ : ❌ ما عندكش قيمة القرض ({u_data['loan']} د.ل) باش تسدده!")
+        return True
+
+    if ntext in ("فتح مصرف خاص", "فتح بنك خاص", "انشاء مصرف خاص", "تاسيس مصرف"):
+        pending_bank_creation[user.id] = now + 180
+        bot.reply_to(
+            m,
+            "▽ : 🏦 <b>تأسيس مصرف تجاري خاص :</b>\n"
+            "------------------\n"
+            "▽ : تكلفة التأسيس والترخيص ← <b>500,000 د.ل</b>\n"
+            "▽ : دز توا <b>اسم المصرف الجديد</b> في رسالتك الجاية (أو اكتب: <code>فتح مصرف خاص مصرف النور</code>)!"
+        )
+        return True
+
+    if ntext.startswith(("فتح مصرف خاص ", "فتح بنك خاص ", "انشاء مصرف خاص ")):
+        b_custom = text.split(maxsplit=3)[-1].strip(" =")
+        cost = 500000
+        if u_data["bank_balance"] < cost and u_data["cash"] < cost:
+            bot.reply_to(
+                m,
+                f"▽ : ❌ تأسيس مصرف خاص باسم « <b>{esc(b_custom)}</b> » يبي راس مال قدره <b>{cost} د.ل</b>!\n"
+                f"▽ : رصيدك الحالي ما يكفيش، اجمع الفلوس من المتاجر والخدمة بالأول."
+            )
+            return True
+        with db_lock:
+            conn = get_db()
+            ex = conn.execute("SELECT * FROM custom_banks WHERE bank_name = ?", (b_custom,)).fetchone()
+            if ex:
+                conn.close()
+                bot.reply_to(m, "▽ : ❌ الاسم هدا مستخدم لمصرف ثاني!")
+                return True
+            conn.execute(
+                "INSERT INTO custom_banks (owner_id, owner_name, bank_name, fee_pct, security, vault) VALUES (?,?,?,1.5,65,150000)",
+                (user.id, u_data["name"], b_custom)
+            )
+            conn.commit()
+            conn.close()
+        if u_data["bank_balance"] >= cost:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost, bank_name=b_custom)
+        else:
+            update_user_field(user.id, cash=u_data["cash"] - cost, bank_name=b_custom)
+        bot.reply_to(
+            m,
+            f"🏦👑 <b>حدث اقتصادي ضخم في ليبيا!</b>\n"
+            f"------------------\n"
+            f"▽ : قام رجل الأعمال <b>{esc(u_data['name'])}</b> بتأسيس مصرف خاص باسم:\n"
+            f"▽ : « <b>{esc(b_custom)}</b> »\n"
+            f"▽ : يقدروا كل المواطنين توا يفتحوا حسابات فيه، وعمولات الإيداع تمشي لخزينة المصرف!"
+        )
+        return True
+
+    if ntext in ("مصرفي", "بنكي الخاص"):
+        with db_lock:
+            conn = get_db()
+            cb = conn.execute("SELECT * FROM custom_banks WHERE owner_id = ?", (user.id,)).fetchone()
+            conn.close()
+        if not cb:
+            bot.reply_to(m, "▽ : ❌ أنت ما تملكش مصرف خاص حالياً! لتأسيس مصرف اكتب: <code>فتح مصرف خاص</code>.")
+            return True
+        bot.reply_to(
+            m,
+            f"▽ : 🏦 <b>إدارة مصرفك الخاص « {esc(cb['bank_name'])} » :</b>\n"
+            f"------------------\n"
+            f"▽ : المالك ← <b>{esc(u_data['name'])}</b>\n"
+            f"▽ : الخزينة والاحتياطي ← <b>{cb['vault']} د.ل</b>\n"
+            f"▽ : نسبة العمولة ← <b>{cb['fee_pct']}%</b> | قوة الحماية ← <b>{cb['security']}%</b>\n"
+            f"------------------\n"
+            f"▽ : لسحب الأرباح الزايدة عن الاحتياطي اكتب: <code>سحب ارباح المصرف</code>"
+        )
+        return True
+
+    if ntext == "سحب ارباح المصرف":
+        with db_lock:
+            conn = get_db()
+            cb = conn.execute("SELECT * FROM custom_banks WHERE owner_id = ?", (user.id,)).fetchone()
+            if not cb:
+                conn.close()
+                bot.reply_to(m, "▽ : ❌ أنت ما تملكش مصرف خاص!")
+                return True
+            if cb["vault"] <= 100000:
+                conn.close()
+                bot.reply_to(m, f"▽ : خزينة مصرفك ({esc(cb['bank_name'])}) فيها الاحتياطي الإجباري بس ({cb['vault']} د.ل).")
+                return True
+            prof = cb["vault"] - 100000
+            conn.execute("UPDATE custom_banks SET vault = 100000 WHERE id = ?", (cb["id"],))
+            conn.commit()
+            conn.close()
+        update_user_field(user.id, bank_balance=u_data["bank_balance"] + prof)
+        bot.reply_to(m, f"▽ : 🏦 تم سحب أرباح عمولات مصرفك (<b>{prof} د.ل</b>) وإيداعها في حسابك السري!")
+        return True
+
+    # ─────────────── 3. المدن والسفر، الوظائف (`وظيفتي` و `ترقيه`) ───────────────
+    if ntext in ("المدن", "اختيار مدينتي", "تغيير مدينتي", "مدينتي"):
+        txt = (
+            f"▽ : <b>نظام المدن والسفر في ليبيا 🇱🇾</b>\n"
+            f"▽ : مدينتك الحالية ← <b>{esc(u_data['city'])}</b>\n"
+            f"------------------\n"
+        )
+        for cn, ci in CITIES.items():
+            txt += f"▽ : <b>{cn}</b> ~ التذكرة: {ci['ticket']} د.ل ({ci['desc']})\n"
+        txt += "------------------\n▽ : اختار مدينتك من الأزرار أو اكتب: <code>سفر بنغازي</code>"
+        bot.reply_to(m, txt, reply_markup=build_city_kb(user.id))
+        return True
+
+    if ntext.startswith("سفر "):
+        dest_q = text.split(maxsplit=1)[1].strip()
+        dest = match_dict_key(CITIES, dest_q)
+        if dest:
+            if dest == u_data["city"]:
+                bot.reply_to(m, f"▽ : أنت قاعد في مدينة <b>{dest}</b> أصلاً يا غالي!")
+                return True
+            t_cost = CITIES[dest]["ticket"]
+            if u_data["cash"] < t_cost:
+                bot.reply_to(m, f"▽ : ❌ تبي {t_cost} د.ل كاش في جيبك باش تقص تذكرة السفر إلى {dest}!")
+                return True
+            update_user_field(user.id, city=dest, cash=u_data["cash"] - t_cost)
+            bot.reply_to(
+                m,
+                f"▽ : ✈️ طريق السلامة! سافرت من <b>{u_data['city']}</b> ووصلت على خير لمدينة <b>{dest}</b>.\n"
+                f"▽ : تم خصم حق التذكرة (<b>{t_cost} د.ل</b>)."
+            )
+        return True
+
+    if ntext in ("الوظائف", "المهن", "تعيين وظيفه"):
+        txt = "▽ : ديوان الوظائف الحكومية والخاصة (نظام المراحل والترقيات) :\n------------------\n"
+        for j_name, j_info in JOBS.items():
+            l1 = j_info["levels"][1]["salary"]
+            l4 = j_info["levels"][4]["salary"]
+            txt += f"▽ : <b>{j_name}</b> ~ اليومية تبدأ من {l1} إلى {l4} د.ل\n  └ <i>{j_info['desc']}</i>\n"
+        txt += "------------------\n▽ : اختار وظيفتك بالضغط على الأزرار لوطة أو اكتب: <code>وظيفه مبرمج</code>"
+        bot.reply_to(m, txt, reply_markup=build_jobs_kb(user.id))
+        return True
+
+    if ntext in ("وظيفتي", "مهنتي", "شغلي"):
+        if u_data["job"] == "عاطل" or u_data["job"] not in JOBS:
+            bot.reply_to(
+                m,
+                "▽ : ❌ أنت حالياً <b>عاطل ومقعمز بلا خدمة</b>!\n▽ : اختار وظيفتك توا من الأزرار لوطة باش تبدأ تخدم وتلم فلوس :",
+                reply_markup=build_jobs_kb(user.id)
+            )
+            return True
+        j_name = u_data["job"]
+        cur_lvl = u_data["job_level"]
+        lvl_info = JOBS[j_name]["levels"].get(cur_lvl, JOBS[j_name]["levels"][1])
+        nxt_txt = "وصلت لأعلى درجة 👑"
+        if cur_lvl < 4:
+            nxt = JOBS[j_name]["levels"][cur_lvl + 1]
+            nxt_txt = f"{nxt['title']} (تبي {nxt['req_xp']} XP)"
+        bot.reply_to(
+            m,
+            f"▽ : 💼 <b>بطاقة العمل الوظيفية :</b>\n"
+            f"------------------\n"
+            f"▽ : الموظف ← <b>{esc(u_data['name'])}</b>\n"
+            f"▽ : المهنة ← <b>{esc(j_name)}</b>\n"
+            f"▽ : الدرجة الحالية ← <b>{esc(lvl_info['title'])}</b> (المرحلة {cur_lvl}/4)\n"
+            f"▽ : اليومية ← <b>{lvl_info['salary']} د.ل</b>\n"
+            f"▽ : نقاط الخبرة ← <b>{u_data['job_xp']} XP</b>\n"
+            f"▽ : الترقية الجاية ← <b>{esc(nxt_txt)}</b>\n"
+            f"------------------\n"
+            f"▽ : اكتب <code>شغل</code> لاستلام اليومية وزيادة الخبرة، أو <code>ترقيه</code> للترقية!"
+        )
+        return True
+
+    if ntext.startswith(("وظيفه ", "مهنه ", "تعيين ")):
+        j_q = text.split(maxsplit=1)[1].strip()
+        j_c = match_dict_key(JOBS, j_q)
+        if j_c:
+            update_user_field(user.id, job=j_c, job_level=1, job_xp=0)
+            lvl_info = JOBS[j_c]["levels"][1]
+            bot.reply_to(
+                m,
+                f"▽ : 🎉 مبروك التعيين! تعينت رسمياً في مهنة <b>{j_c}</b>!\n"
+                f"▽ : الدرجة الأولى ← <b>{lvl_info['title']}</b> (اليومية: {lvl_info['salary']} د.ل)\n"
+                f"▽ : اكتب <code>شغل</code> أو <code>راتب</code> لاستلام يوميتك وتجميع الخبرة!"
+            )
+            return True
+
+    if ntext in ("شغل", "عمل", "راتب", "خدمه", "يوميه", "بخشيش"):
+        if u_data["job"] == "عاطل" or u_data["job"] not in JOBS:
+            bot.reply_to(
+                m,
+                "▽ : ❌ أنت عاطل عن العمل! اختار وظيفتك من الأزرار لوطة بالأول :",
+                reply_markup=build_jobs_kb(user.id)
+            )
+            return True
+        if now - u_data["last_salary"] < 480:
+            rem = (480 - (now - u_data["last_salary"])) // 60 + 1
+            bot.reply_to(m, f"▽ : ⏳ كملت ورديتك توا! استريح واشرب طاسة شاهي لمدة <b>{rem} دقيقة</b> وبعدين ارجع للخدمة.")
+            return True
+
+        j_name = u_data["job"]
+        cur_lvl = u_data["job_level"]
+        new_xp = u_data["job_xp"] + 2
+        lvl_data = JOBS[j_name]["levels"].get(cur_lvl, JOBS[j_name]["levels"][1])
+        sal = lvl_data["salary"]
+        if u_data.get("account_type") == "مميز":
+            sal = int(sal * 1.15)  # مكافأة +15% لأصحاب الحساب المميز
+
+        promo_msg = ""
+        if cur_lvl < 4:
+            next_lvl_req = JOBS[j_name]["levels"][cur_lvl + 1]["req_xp"]
+            if new_xp >= next_lvl_req:
+                cur_lvl += 1
+                new_title = JOBS[j_name]["levels"][cur_lvl]["title"]
+                new_sal = JOBS[j_name]["levels"][cur_lvl]["salary"]
+                promo_msg = f"\n🎖️ <b>ترقية مهنية مستحقة!</b> اترقيت لدرجة (<b>{new_title}</b>) وركبت يوميتك إلى <b>{new_sal} د.ل</b>!"
+
+        update_user_field(
+            user.id,
+            cash=u_data["cash"] + sal,
+            job_level=cur_lvl,
+            job_xp=new_xp,
+            last_salary=now
+        )
+        bot.reply_to(
+            m,
+            f"▽ : 💼 كملت خدمتك اليومية في مدينة <b>{esc(u_data['city'])}</b> بنجاح!\n"
+            f"------------------\n"
+            f"▽ : المسمى الوظيفي ← <b>{esc(lvl_data['title'])}</b> (المرحلة {cur_lvl}/4)\n"
+            f"▽ : اليومية المستلمة ← <b>{sal} د.ل</b> كاش في جيبك 💵\n"
+            f"▽ : خبرة المهنة ← <b>{new_xp} XP</b>{promo_msg}\n"
+            f"------------------\n"
+            f"▽ : 💡 نصيحة: اودع فلوسك في المصرف (<code>ايداع الكل</code>) أو دسّها في خزنة حوشك!"
+        )
+        return True
+
+    if ntext in ("ترقيه", "ترقيتي", "ترقيه وظيفيه"):
+        if u_data["job"] not in JOBS:
+            bot.reply_to(m, "▽ : ❌ أنت مش موظف حالياً! اختار وظيفتك بالأول:", reply_markup=build_jobs_kb(user.id))
+            return True
+        cur_lvl = u_data["job_level"]
+        if cur_lvl >= 4:
+            bot.reply_to(m, "▽ : 👑 أنت واصل لأعلى درجة وظيفية في مهنتك يا مدير!")
+            return True
+        nxt = JOBS[u_data["job"]]["levels"][cur_lvl + 1]
+        req_xp = nxt["req_xp"]
+        if u_data["job_xp"] >= req_xp:
+            update_user_field(user.id, job_level=cur_lvl + 1)
+            bot.reply_to(
+                m,
+                f"🎖️🎉 <b>مبروك الترقية الوظيفية!</b>\n"
+                f"▽ : اترقيت إلى ← <b>{esc(nxt['title'])}</b> (المرحلة {cur_lvl+1}/4)\n"
+                f"▽ : يوميتك الجديدة ← <b>{nxt['salary']} د.ل</b>!"
+            )
+            return True
+        missing_xp = req_xp - u_data["job_xp"]
+        course_cost = missing_xp * 400
+        bot.reply_to(
+            m,
+            f"▽ : 📈 <b>سلم الترقيات لمهنة ({u_data['job']}) :</b>\n"
+            f"------------------\n"
+            f"▽ : درجتك الحالية ← المرحلة {cur_lvl}\n"
+            f"▽ : الدرجة الجاية ← <b>{nxt['title']}</b> (اليومية: {nxt['salary']} د.ل)\n"
+            f"▽ : الخبرة المطلوبة ← <b>{req_xp} XP</b> (خبرتك توا: {u_data['job_xp']} XP)\n"
+            f"------------------\n"
+            f"▽ : استمر في كتابة <code>شغل</code> باش تترقى مجاناً، أو اكتب <code>شراء دوره</code> ({course_cost} د.ل) للترقية الفورية!"
+        )
+        return True
+
+    if ntext in ("شراء دوره", "دوره تدريبيه"):
+        if u_data["job"] not in JOBS or u_data["job_level"] >= 4:
+            return True
+        cur_lvl = u_data["job_level"]
+        nxt = JOBS[u_data["job"]]["levels"][cur_lvl + 1]
+        missing_xp = max(1, nxt["req_xp"] - u_data["job_xp"])
+        cost = missing_xp * 400
+        if u_data["cash"] >= cost:
+            update_user_field(user.id, cash=u_data["cash"] - cost, job_level=cur_lvl + 1, job_xp=nxt["req_xp"])
+        elif u_data["bank_balance"] >= cost:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost, job_level=cur_lvl + 1, job_xp=nxt["req_xp"])
+        else:
+            bot.reply_to(m, f"▽ : ❌ تكلفة الدورة التدريبية للترقية الفورية هي <b>{cost} د.ل</b>!")
+            return True
+        bot.reply_to(
+            m,
+            f"🎓🎖️ <b>نجحت في الدورة التدريبية!</b>\n"
+            f"▽ : تمت ترقيتك طول لدرجة ← <b>{esc(nxt['title'])}</b> (اليومية: {nxt['salary']} د.ل)!"
+        )
+        return True
+
+    if ntext in ("علاج", "بيع دواء") and m.reply_to_message:
+        if u_data["job"] not in ("دكتور", "صيدلي"):
+            bot.reply_to(m, "▽ : ❌ الأمر هدا خاص بالدكتور أو الصيدلي بس!")
+            return True
+        patient = ensure_user(m.reply_to_message.from_user)
+        update_user_field(patient["user_id"], hp=100)
+        fee = 400 * u_data["job_level"]
+        update_user_field(user.id, cash=u_data["cash"] + fee, job_xp=u_data["job_xp"] + 1)
+        bot.reply_to(m, f"▽ : 🩺 عالجت <b>{esc(patient['name'])}</b> وخديت أتعابك <b>{fee} د.ل</b> كاش!")
+        return True
+
+    if ntext == "تصليح" and m.reply_to_message:
+        if u_data["job"] != "ميكانيكي":
+            bot.reply_to(m, "▽ : ❌ الأمر هدا للميكانيكي بس!")
+            return True
+        cli = ensure_user(m.reply_to_message.from_user)
+        if cli["car"] == "بدون سيارة":
+            bot.reply_to(m, "▽ : 😂 الراجل هدا يمشي على رجليه ما عنداش سيارة أصلاً!")
+            return True
+        fee = 500 * u_data["job_level"]
+        update_user_field(cli["user_id"], car_cond=100)
+        update_user_field(user.id, cash=u_data["cash"] + fee, job_xp=u_data["job_xp"] + 1)
+        bot.reply_to(m, f"▽ : 🔧 صلّحت سيارة <b>{esc(cli['name'])}</b> لـ 100% وربحت <b>{fee} د.ل</b> كاش!")
+        return True
+
+    if ntext == "قبض" and m.reply_to_message:
+        if u_data["job"] != "شرطي":
+            bot.reply_to(m, "▽ : ❌ الأمر هدا لرجال الشرطة والأمن بس!")
+            return True
+        crim = ensure_user(m.reply_to_message.from_user)
+        if crim["wanted"] == 0:
+            bot.reply_to(m, "▽ : ⚖️ المواطن هدا سجله نظيف ومش مطلوب!")
+            return True
+        reward = 1000 * u_data["job_level"]
+        update_user_field(crim["user_id"], jail_until=now + 300, wanted=0)
+        update_user_field(user.id, cash=u_data["cash"] + reward, job_xp=u_data["job_xp"] + 2)
+        bot.reply_to(
+            m,
+            f"▽ : 🚓 شدّ الشرطي <b>{esc(u_data['name'])}</b> المطلوب للعدالة <b>{esc(crim['name'])}</b> وحطّه في الحبس!\n"
+            f"▽ : المكافأة الأمنية ← <b>{reward} د.ل</b> كاش 🎖️"
+        )
+        return True
+
+    if ntext == "اختراق صراف":
+        if u_data["job"] != "مبرمج":
+            bot.reply_to(m, "▽ : ❌ الأمر هدا للمبرمجين بس!")
+            return True
+        if now - u_data["last_work"] < 600:
+            bot.reply_to(m, "▽ : ⏳ أنظمة الحماية مشددة توا، اصبر شوية!")
+            return True
+        chance = 55 + (u_data["job_level"] * 8)
+        if random.randint(1, 100) <= chance:
+            hack_val = random.randint(1500, 3000) * u_data["job_level"]
+            update_user_field(user.id, cash=u_data["cash"] + hack_val, last_work=now, job_xp=u_data["job_xp"] + 2)
+            bot.reply_to(m, f"▽ : 💻⚡ هكّرت الصراف الآلي بنجاح وسحبت <b>{hack_val} د.ل</b> كاش!")
+        else:
+            update_user_field(user.id, jail_until=now + 240, last_work=now)
+            bot.reply_to(m, "▽ : 🚨 كشفك النظام الأمني وشدوك الحبس لمدة 4 دقائق!")
+        return True
+
+    if ntext == "حمايه حساب":
+        if u_data["job"] != "مبرمج":
+            bot.reply_to(m, "▽ : ❌ الأمر هدا للمبرمجين بس!")
+            return True
+        update_user_field(user.id, firewall_until=now + 3600)
+        bot.reply_to(m, "▽ : 🛡️ فعّلت جدار ناري لحماية جيبك وحسابك لمدة ساعة كاملة!")
+        return True
+
+    # ─────────────── 4. السيارات الحقيقية، السباق، العقارات، وخزنة وحماية الحوش ───────────────
+    if ntext in ("السيارات", "معرض السيارات", "سيارات"):
+        txt = "▽ : معرض السيارات العالمية الحقيقية (السيارات محمية وما تنسرقش) :\n------------------\n"
+        for cn, ci in CARS.items():
+            txt += f"🚗 <b>{cn}</b> ({ci['ar']})\n  └ السعر: {ci['price']} د.ل | السرعة: {ci['speed']} كم/س\n"
+        txt += "------------------\n▽ : للشراء اكتب الاسم بالعربي أو الإنجليزي:\n<code>شراء سياره تويوتا كورولا</code> أو <code>شراء سياره مرسيدس</code>\n▽ : للصيانة: <code>صيانه سيارتي</code> | للسباق: <code>سباق</code> بالرد"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith("شراء سياره "):
+        cn_query = text.split(maxsplit=2)[2].strip()
+        matched_car = find_car_name(cn_query)
+        if not matched_car:
+            bot.reply_to(m, "▽ : ❌ اسم السيارة مش موجود في المعرض! اكتب <code>السيارات</code> وشوف الأسماء.")
+            return True
+        pr = CARS[matched_car]["price"]
+        if u_data["bank_balance"] >= pr:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - pr, car=matched_car, car_cond=100)
+            bot.reply_to(m, f"▽ : 🏎️ مبروك عليك! شريت السيارة الحقيقية (<b>{matched_car}</b>) بسرعة {CARS[matched_car]['speed']} كم/س من رصيدك المصرفي!")
+        elif u_data["cash"] >= pr:
+            update_user_field(user.id, cash=u_data["cash"] - pr, car=matched_car, car_cond=100)
+            bot.reply_to(m, f"▽ : 🏎️ مبروك عليك! شريت السيارة (<b>{matched_car}</b>) بالكاش!")
+        else:
+            bot.reply_to(m, f"▽ : ❌ حق السيارة ({pr} د.ل) مش متوفر عندك توا!")
+        return True
+
+    if ntext in ("صيانه سيارتي", "تصليح سيارتي", "سيارتي"):
+        if u_data["car"] not in CARS:
+            bot.reply_to(m, "▽ : ❌ ما عندكش سيارة توا! اكتب <code>السيارات</code>.")
+            return True
+        m_cost = CARS[u_data["car"]]["maint"]
+        if u_data["cash"] < m_cost:
+            bot.reply_to(m, f"▽ : ❌ تبي {m_cost} د.ل كاش لصيانة سيارتك ({u_data['car']})!")
+            return True
+        update_user_field(user.id, cash=u_data["cash"] - m_cost, car_cond=100)
+        bot.reply_to(m, f"▽ : 🔧 درت صيانة كاملة لسيارتك (<b>{u_data['car']}</b>) ورجعت كفاءتها 100%!")
+        return True
+
+    if ntext == "بيع سياره":
+        if u_data["car"] in CARS:
+            p = int(CARS[u_data["car"]]["price"] * 0.8)
+            old_c = u_data["car"]
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] + p, car="بدون سيارة")
+            bot.reply_to(m, f"▽ : 🚗 بعت سيارتك (<b>{old_c}</b>) للمعرض وانحطت <b>{p} د.ل</b> في مصرفك السري!")
+        else:
+            bot.reply_to(m, "▽ : ❌ أنت ما تملكش سيارة باش تبيعها!")
+        return True
+
+    if ntext == "سباق" and m.reply_to_message:
+        opp = ensure_user(m.reply_to_message.from_user)
+        if u_data["car"] not in CARS or opp["car"] not in CARS:
+            bot.reply_to(m, "▽ : ❌ لازم الزوز يكون عندكم سيارات حقيقية باش تتسابقوا!")
+            return True
+        c1 = CARS[u_data["car"]]
+        c2 = CARS[opp["car"]]
+        s1 = int(c1["speed"] * (u_data["car_cond"] / 100.0)) + random.randint(1, 35)
+        s2 = int(c2["speed"] * (opp["car_cond"] / 100.0)) + random.randint(1, 35)
+        prize = 1200
+        if s1 >= s2:
+            update_user_field(user.id, cash=u_data["cash"] + prize, car_cond=max(30, u_data["car_cond"] - 4))
+            bot.reply_to(
+                m,
+                f"🏁🏎️ <b>سباق سرعة مولع في الطريق الساحلي!</b>\n"
+                f"------------------\n"
+                f"▽ : فاز <b>{esc(u_data['name'])}</b> بسيارته (<b>{u_data['car']}</b> - سرعة {c1['speed']} كم/س)\n"
+                f"▽ : على <b>{esc(opp['name'])}</b> ({opp['car']})\n"
+                f"▽ : الجائزة ← <b>{prize} د.ل</b> كاش!"
+            )
+        else:
+            update_user_field(opp["user_id"], cash=opp["cash"] + prize, car_cond=max(30, opp["car_cond"] - 4))
+            bot.reply_to(
+                m,
+                f"🏁🏎️ <b>سباق سرعة مولع في الطريق الساحلي!</b>\n"
+                f"------------------\n"
+                f"▽ : فاز <b>{esc(opp['name'])}</b> بسيارته (<b>{opp['car']}</b> - سرعة {c2['speed']} كم/س)\n"
+                f"▽ : على <b>{esc(u_data['name'])}</b> ({u_data['car']})\n"
+                f"▽ : الجائزة ← <b>{prize} د.ل</b> كاش!"
+            )
+        return True
+
+    if ntext in ("العقارات", "البيوت", "بيتي", "عقاري", "حوشي"):
+        txt = "▽ : دليل العقارات والحياش والفلل والعمارات الليبية :\n------------------\n"
+        for hn, hi in HOUSES.items():
+            txt += f"🏠 <b>{hn}</b>\n  └ السعر: {hi['price']} د.ل | حماية أساسية: {hi['defense']}% | سعة الخزنة: {hi['safe_cap']} د.ل\n"
+        txt += (
+            "------------------\n"
+            "▽ : للشراء: <code>شراء عقار شقه سكنيه في السراج</code>\n"
+            "▽ : لتقوية الحماية: <code>انظمه الحمايه</code>\n"
+            "▽ : لخزنة الحوش: <code>ايداع بالبيت المبلغ</code> ~ <code>سحب من البيت المبلغ</code>"
+        )
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith(("شراء عقار ", "شراء بيت ", "شراء حوش ")):
+        hn_q = text.split(maxsplit=2)[2].strip()
+        hn = match_dict_key(HOUSES, hn_q)
+        if hn:
+            pr = HOUSES[hn]["price"]
+            if u_data["bank_balance"] >= pr:
+                update_user_field(user.id, bank_balance=u_data["bank_balance"] - pr, house=hn)
+                bot.reply_to(m, f"▽ : 🔑 مبروك الحوش الجديد! شريت (<b>{hn}</b>) من رصيدك المصرفي.")
+            elif u_data["cash"] >= pr:
+                update_user_field(user.id, cash=u_data["cash"] - pr, house=hn)
+                bot.reply_to(m, f"▽ : 🔑 مبروك الحوش الجديد! شريت (<b>{hn}</b>) بالكاش.")
+            else:
+                bot.reply_to(m, f"▽ : ❌ حق العقار ({pr} د.ل) مش متوفر عندك!")
+        else:
+            bot.reply_to(m, "▽ : ❌ اسم العقار غلط! اكتب <code>العقارات</code> وشوف القائمة.")
+        return True
+
+    if ntext in ("بيع بيت", "بيع عقار", "بيع حوش"):
+        if u_data["house"] in HOUSES:
+            p = int(HOUSES[u_data["house"]]["price"] * 0.8)
+            old_h = u_data["house"]
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] + p, house="بدون سكن")
+            bot.reply_to(m, f"▽ : 🏠 بعت عقارك (<b>{old_h}</b>) وانحطت <b>{p} د.ل</b> في مصرفك السري!")
+        else:
+            bot.reply_to(m, "▽ : ❌ ما عندكش عقار باش تبيعه!")
+        return True
+
+    if ntext in ("انظمه الحمايه", "تطوير الحمايه", "خزنه البيت", "خزنه الحوش"):
+        txt = f"▽ : خزنة وحماية الحوش ({esc(u_data['house'])}) :\n▽ : الكاش المدسوس في الحوش ← <b>{u_data['home_cash']} د.ل</b>\n------------------\n"
+        for sn, si in SECURITY_SYSTEMS.items():
+            txt += f"🛡️ <b>{sn}</b> ~ السعر: {si['price']} د.ل (+{si['boost']}% حماية)\n"
+        txt += "------------------\n▽ : للتركيب اكتب: <code>تطوير الحمايه كاميرات مراقبه</code>"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith("تطوير الحمايه "):
+        s_q = text.split(maxsplit=2)[2].strip()
+        s_name = match_dict_key(SECURITY_SYSTEMS, s_q)
+        if s_name:
+            cost = SECURITY_SYSTEMS[s_name]["price"]
+            boost = SECURITY_SYSTEMS[s_name]["boost"]
+            if u_data["cash"] < cost and u_data["bank_balance"] < cost:
+                bot.reply_to(m, f"▽ : ❌ تبي {cost} د.ل باش تركب ({s_name})!")
+                return True
+            if u_data["cash"] >= cost:
+                update_user_field(user.id, cash=u_data["cash"] - cost, house_sec_level=min(95, u_data["house_sec_level"] + boost))
+            else:
+                update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost, house_sec_level=min(95, u_data["house_sec_level"] + boost))
+            with db_lock:
+                conn = get_db()
+                conn.execute("UPDATE businesses SET security = MIN(95, security + ?) WHERE owner_id = ?", (boost, user.id))
+                conn.commit()
+                conn.close()
+            bot.reply_to(m, f"▽ : 🛡️ تم تركيب (<b>{s_name}</b>) بنجاح! زادت قوة حماية حوشك ومتجرك بمقدار +{boost}%.")
+        return True
+
+    if ntext.startswith(("ايداع بالبيت ", "ايداع بالحوش ")):
+        if u_data["house"] not in HOUSES:
+            bot.reply_to(m, "▽ : ❌ لازم تشري عقار بالأول باش تدس الكاش في الحوش!")
+            return True
+        arg = ntext.split()[-1]
+        amt = u_data["cash"] if arg == "الكل" else (int(arg) if arg.isdigit() else 0)
+        cap = HOUSES[u_data["house"]]["safe_cap"]
+        if amt <= 0 or amt > u_data["cash"]:
+            bot.reply_to(m, "▽ : ❌ المبلغ مش متوفر في جيبك!")
+            return True
+        if u_data["home_cash"] + amt > cap:
+            bot.reply_to(m, f"▽ : ❌ سعة خزنة حوشك القصوى هي {cap} د.ل!")
+            return True
+        update_user_field(user.id, cash=u_data["cash"] - amt, home_cash=u_data["home_cash"] + amt)
+        bot.reply_to(m, f"▽ : 🏠 دسّيت <b>{amt} د.ل</b> كاش في خزنة حوشك ({u_data['house']})!")
+        return True
+
+    if ntext.startswith(("سحب من البيت ", "سحب من الحوش ")):
+        arg = ntext.split()[-1]
+        amt = u_data["home_cash"] if arg == "الكل" else (int(arg) if arg.isdigit() else 0)
+        if amt <= 0 or amt > u_data["home_cash"]:
+            bot.reply_to(m, "▽ : ❌ المبلغ مش متوفر في خزنة حوشك!")
+            return True
+        update_user_field(user.id, cash=u_data["cash"] + amt, home_cash=u_data["home_cash"] - amt)
+        bot.reply_to(m, f"▽ : 💵 خديت <b>{amt} د.ل</b> من خزنة حوشك وحطيتها في جيبك!")
+        return True
+
+    # ─────────────── 5. المتاجر، الصيدليات، متاجر العطور، المواد المنزلية، المولات، والشركاء ───────────────
+    if ntext in ("المتاجر", "المشاريع", "الشركات", "فتح متجر", "فتح مشروع"):
+        txt = "▽ : دليل المتاجر والصيدليات ومتاجر العطور والمولات الخاصة :\n------------------\n"
+        for bt, bi in BUSINESS_CATALOG.items():
+            txt += (
+                f"🏢 <b>{bt}</b> ~ التكلفة: {bi['price']} د.ل\n"
+                f"  └ المنتجات: ({bi['product']})\n"
+                f"  └ جملة: {bi['unit_cost']} د.ل | بيع للزبائن: {bi['unit_sell']} د.ل\n"
+            )
+        txt += (
+            "------------------\n"
+            "▽ : اضغط على الزر لوطة لفتح مشروعك طول، أو اكتب مباشرة:\n"
+            "• <code>فتح متجر عطور التوقيع الذهبي</code>\n"
+            "• <code>فتح صيدليه الشفاء</code>\n"
+            "• <code>فتح متجر مواد منزليه</code>\n"
+            "• <code>فتح قهوه</code> أو <code>فتح مول</code>"
+        )
+        bot.reply_to(m, txt, reply_markup=build_biz_kb(user.id))
+        return True
+
+    if ntext.startswith(("فتح ", "انشاء متجر ", "انشاء مشروع ")) and not ntext.startswith(("فتح المتجر", "فتح حساب", "فتح مصرف", "فتح بنك", "فتح الايدي")):
+        b_type, b_name_custom = parse_open_business(text, u_data["name"])
+        if b_type:
+            cost = BUSINESS_CATALOG[b_type]["price"]
+            if u_data["bank_balance"] >= cost:
+                update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost)
+            elif u_data["cash"] >= cost:
+                update_user_field(user.id, cash=u_data["cash"] - cost)
+            else:
+                bot.reply_to(m, f"▽ : ❌ افتتاح (<b>{b_type}</b>) يبي راس مال قدره <b>{cost} د.ل</b>!")
+                return True
+
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO businesses (owner_id, owner_name, biz_type, custom_name, city, stock, vault, security, marketing, is_open) VALUES (?,?,?,?,?,20,0,20,1,1)",
+                    (user.id, u_data["name"], b_type, b_name_custom, u_data["city"])
+                )
+                conn.commit()
+                conn.close()
+            bot.reply_to(
+                m,
+                f"🏢🎉 <b>افتتاح مشروع تجاري جديد في {esc(u_data['city'])}!</b>\n"
+                f"------------------\n"
+                f"▽ : المالك ← <b>{esc(u_data['name'])}</b>\n"
+                f"▽ : النشاط ← <b>{esc(b_type)}</b>\n"
+                f"▽ : الاسم ← « <b>{esc(b_name_custom)}</b> »\n"
+                f"▽ : بضاعة البداية المجانية ← <b>20 وحدة</b>\n"
+                f"------------------\n"
+                f"▽ : اكتب <code>متجري</code> أو <code>صيدليتي</code> للإدارة، واكتب <code>شراء بضاعه 50</code> لتعبئة المخزن!"
+            )
+            return True
+
+    if ntext in ("متجري", "مشروعي", "شركتي", "صيدليتي", "قهوتي", "مطعمي", "مولي"):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ ما عندكش أي مشروع حالياً! اختار مشروعك من الأزرار لوطة :", reply_markup=build_biz_kb(user.id))
+            return True
+        st = my_biz[0]
+        cat = BUSINESS_CATALOG.get(st["biz_type"], {})
+        with db_lock:
+            conn = get_db()
+            staff = conn.execute("SELECT * FROM business_staff WHERE biz_id = ?", (st["id"],)).fetchall()
+            partners = conn.execute("SELECT * FROM business_partners WHERE biz_id = ?", (st["id"],)).fetchall()
+            conn.close()
+        staff_txt = "، ".join([f"{s['user_name']} ({s['pay_mode']} {s['pay_val']})" for s in staff]) if staff else "ما فيش موظفين"
+        part_txt = "، ".join([f"{p['user_name']} ({p['share_pct']}%)" for p in partners]) if partners else "ما فيش شركاء"
+        bot.reply_to(
+            m,
+            f"▽ : لوحة إدارة المشروع التجاري 🏢\n"
+            f"------------------\n"
+            f"▽ : الاسم ← « <b>{esc(st['custom_name'])}</b> » ({esc(st['biz_type'])})\n"
+            f"▽ : المدينة ← <b>{esc(st['city'])}</b> | الحالة ← <b>{'🟢 مفتوح للزبائن' if st['is_open'] else '🔴 مسكّر'}</b>\n"
+            f"▽ : المخزون ({esc(cat.get('product', ''))}) ← <b>{st['stock']} وحدة باقية</b> 📦\n"
+            f"▽ : إجمالي المبيعات ← <b>{st['total_sales']} عملية بيع</b>\n"
+            f"▽ : الكاش في خزينة المشروع ← <b>{st['vault']} د.ل</b> 💰\n"
+            f"▽ : قوة الحماية ← <b>{st['security']}%</b> | مستوى التسويق ← <b>{st['marketing']}</b>\n"
+            f"▽ : البيع الإلكتروني ← <b>{'✅ مفعل' if st['ecommerce'] else '❌ مش مفعل'}</b>\n"
+            f"▽ : الشركاء ← <b>{esc(part_txt)}</b>\n"
+            f"▽ : الموظفون ← <b>{esc(staff_txt)}</b>\n"
+            f"------------------\n"
+            f"▽ : أوامر الإدارة السريعة :\n"
+            f"• <code>شراء بضاعه 100</code> (أو <code>شراء عطور 100</code> / <code>شراء ادويه 100</code>)\n"
+            f"• <code>سحب ارباح المتجر</code> (توزيع الأرباح ليك وللشركاء)\n"
+            f"• <code>تسويق متجري</code> | <code>تفعيل بيع الكتروني</code>\n"
+            f"• <code>قفل المتجر</code> | <code>فتح المتجر</code>"
+        )
+        return True
+
+    if ntext.startswith(("شراء بضاعه ", "شراء منتجات ", "شراء ادويه ", "شراء عطور ")):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ افتح مشروع بالأول! اكتب <code>المتاجر</code>.")
+            return True
+        parts = ntext.split()
+        if len(parts) >= 3 and parts[-1].isdigit():
+            qty = int(parts[-1])
+            if qty <= 0:
+                return True
+            st = my_biz[0]
+            cat = BUSINESS_CATALOG[st["biz_type"]]
+            total_cost = qty * cat["unit_cost"]
+            if u_data["cash"] >= total_cost:
+                update_user_field(user.id, cash=u_data["cash"] - total_cost)
+            elif u_data["bank_balance"] >= total_cost:
+                update_user_field(user.id, bank_balance=u_data["bank_balance"] - total_cost)
+            else:
+                bot.reply_to(m, f"▽ : ❌ شراء {qty} وحدة من ({cat['product']}) يكلف <b>{total_cost} د.ل</b>!")
+                return True
+            with db_lock:
+                conn = get_db()
+                conn.execute("UPDATE businesses SET stock = stock + ? WHERE id = ?", (qty, st["id"]))
+                conn.commit()
+                conn.close()
+            bot.reply_to(
+                m,
+                f"▽ : 📦 تم توريد <b>{qty} وحدة</b> من ({esc(cat['product'])}) إلى « <b>{esc(st['custom_name'])}</b> »!\n"
+                f"▽ : التكلفة المدفوعة ← <b>{total_cost} د.ل</b>\n"
+                f"▽ : الزبائن بيشروها توا تلقائياً وتنزل الأرباح في خزينة متجرك!"
+            )
+        return True
+
+    if ntext in ("تسويق متجري", "تسويق مشروعي", "تسويق"):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ ما عندكش مشروع باش تسوقله!")
+            return True
+        st = my_biz[0]
+        cost = st["marketing"] * 8000
+        if u_data["cash"] < cost and u_data["bank_balance"] < cost:
+            bot.reply_to(m, f"▽ : ❌ حملة التسويق والإعلانات الممولة تبي <b>{cost} د.ل</b>!")
+            return True
+        if u_data["cash"] >= cost:
+            update_user_field(user.id, cash=u_data["cash"] - cost)
+        else:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost)
+        with db_lock:
+            conn = get_db()
+            conn.execute("UPDATE businesses SET marketing = marketing + 1 WHERE id = ?", (st["id"],))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, f"▽ : 📢 نجحت الحملة التسويقية لـ « <b>{esc(st['custom_name'])}</b> » وكثروا الزبائن على المحل!")
+        return True
+
+    if ntext in ("تفعيل بيع الكتروني", "بيع الكتروني"):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            return True
+        st = my_biz[0]
+        if st["ecommerce"]:
+            bot.reply_to(m, "▽ : البيع الإلكتروني والتوصيل مفعل من قبل لمشروعك!")
+            return True
+        cost = 25000
+        if u_data["bank_balance"] < cost and u_data["cash"] < cost:
+            bot.reply_to(m, f"▽ : ❌ برمجة وتفعيل البيع الإلكتروني والتوصيل تبي <b>{cost} د.ل</b>!")
+            return True
+        if u_data["bank_balance"] >= cost:
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost)
+        else:
+            update_user_field(user.id, cash=u_data["cash"] - cost)
+        with db_lock:
+            conn = get_db()
+            conn.execute("UPDATE businesses SET ecommerce = 1 WHERE id = ?", (st["id"],))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, f"▽ : 🌐🛒 تم تفعيل منظومة البيع الإلكتروني والتوصيل لـ « <b>{esc(st['custom_name'])}</b> »!")
+        return True
+
+    if ntext in ("قفل المتجر", "فتح المتجر", "قفل متجري", "فتح متجري"):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            return True
+        st = my_biz[0]
+        new_state = 1 if ntext.startswith("فتح") else 0
+        with db_lock:
+            conn = get_db()
+            conn.execute("UPDATE businesses SET is_open = ? WHERE id = ?", (new_state, st["id"]))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, f"▽ : تم {'فتح 🟢' if new_state else 'تسكير 🔴'} « <b>{esc(st['custom_name'])}</b> »!")
+        return True
+
+    if ntext in ("سحب ارباح المتجر", "تحصيل ارباح", "سحب ارباحي"):
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ ما عندكش مشروع تجاري!")
+            return True
+        st = my_biz[0]
+        vault = st["vault"]
+        if vault <= 0:
+            bot.reply_to(m, "▽ : خزينة المشروع فاضية توا! تأكد من توفير البضاعة (`شراء بضاعه 50`) وفتح المتجر.")
+            return True
+        with db_lock:
+            conn = get_db()
+            partners = conn.execute("SELECT * FROM business_partners WHERE biz_id = ?", (st["id"],)).fetchall()
+            conn.execute("UPDATE businesses SET vault = 0 WHERE id = ?", (st["id"],))
+            conn.commit()
+            conn.close()
+
+        partner_cuts = 0
+        for p in partners:
+            p_cut = int(vault * (p["share_pct"] / 100.0))
+            if p_cut > 0:
+                partner_cuts += p_cut
+                p_u = get_user_by_id(p["user_id"])
+                if p_u:
+                    update_user_field(p_u["user_id"], bank_balance=p_u["bank_balance"] + p_cut)
+
+        owner_net = max(0, vault - partner_cuts)
+        update_user_field(user.id, cash=u_data["cash"] + owner_net)
+        bot.reply_to(
+            m,
+            f"▽ : 💰 تم تحصيل أرباح مبيعات « <b>{esc(st['custom_name'])}</b> »!\n"
+            f"------------------\n"
+            f"▽ : إجمالي الخزينة ← <b>{vault} د.ل</b>\n"
+            f"▽ : حصة الشركاء المحولة لمصارفهم ← <b>{partner_cuts} د.ل</b>\n"
+            f"▽ : صافي حصتك في جيبك ← <b>{owner_net} د.ل</b> كاش!"
+        )
+        return True
+
+    if ntext.startswith("تعيين موظف") and m.reply_to_message:
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ لازم يكون عندك مشروع باش تعين موظفين!")
+            return True
+        st = my_biz[0]
+        emp_u = ensure_user(m.reply_to_message.from_user)
+        parts = ntext.split()
+        mode = "نسبة"
+        val = 10
+        if len(parts) >= 4 and parts[2] in ("نسبه", "راتب") and parts[3].isdigit():
+            mode = "نسبة" if parts[2] == "نسبه" else "راتب"
+            val = int(parts[3])
+        elif len(parts) == 3 and parts[2].isdigit():
+            val = int(parts[2])
+        if mode == "نسبة":
+            val = min(40, max(1, val))
+        with db_lock:
+            conn = get_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO business_staff (biz_id, user_id, user_name, pay_mode, pay_val) VALUES (?,?,?,?,?)",
+                (st["id"], emp_u["user_id"], emp_u["name"], mode, val)
+            )
+            conn.commit()
+            conn.close()
+        bot.reply_to(
+            m,
+            f"▽ : 🤝 تم تعيين <b>{esc(emp_u['name'])}</b> موظف في « <b>{esc(st['custom_name'])}</b> »!\n"
+            f"▽ : نظام الخلصة ← <b>{mode} ({val}{'%' if mode == 'نسبة' else ' د.ل'})</b> من المبيعات تلقائياً."
+        )
+        return True
+
+    if ntext == "فصل موظف" and m.reply_to_message:
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            return True
+        st = my_biz[0]
+        emp_u = ensure_user(m.reply_to_message.from_user)
+        with db_lock:
+            conn = get_db()
+            conn.execute("DELETE FROM business_staff WHERE biz_id = ? AND user_id = ?", (st["id"], emp_u["user_id"]))
+            conn.commit()
+            conn.close()
+        bot.reply_to(m, f"▽ : 👞 قام المدير بطرد وفصل <b>{esc(emp_u['name'])}</b> من الخدمة في « <b>{esc(st['custom_name'])}</b> »!")
+        return True
+
+    if ntext.startswith(("اضافه شريك", "دخول شريك")) and m.reply_to_message:
+        my_biz = get_user_businesses(user.id)
+        if not my_biz:
+            bot.reply_to(m, "▽ : ❌ لازم يكون عندك متجر أو مول باش تضيف شريك!")
+            return True
+        st = my_biz[0]
+        part_u = ensure_user(m.reply_to_message.from_user)
+        parts = ntext.split()
+        pct = int(parts[-1]) if parts[-1].isdigit() else 20
+        pct = min(49, max(5, pct))
+        with db_lock:
+            conn = get_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO business_partners (biz_id, user_id, user_name, share_pct) VALUES (?,?,?,?)",
+                (st["id"], part_u["user_id"], part_u["name"], pct)
+            )
+            conn.commit()
+            conn.close()
+        bot.reply_to(
+            m,
+            f"▽ : 🤝🏢 <b>عقد شراكة رسمي!</b>\n"
+            f"▽ : خش <b>{esc(part_u['name'])}</b> شريك بنسبة <b>{pct}%</b> في مشروع « <b>{esc(st['custom_name'])}</b> »!"
+        )
+        return True
+
+    # ─────────────── 6. السوق السوداء والسرقات الذكية ───────────────
+    if ntext in ("السوق السوداء", "سوق سودا", "سوق سوداء"):
+        txt = "▽ : 🕶️ <b>السوق السوداء السرية (معدات السطو والتهكير) :</b>\n------------------\n"
+        for iname, iinfo in BLACK_MARKET.items():
+            txt += f"💣 <b>{iname}</b> ~ السعر: {iinfo['price']} د.ل (+{iinfo['power']}% نجاح)\n  └ <i>{iinfo['desc']}</i>\n"
+        txt += "------------------\n▽ : للشراء اكتب: <code>شراء اداه مفك اقفال</code>"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith("شراء اداه "):
+        t_q = text.split(maxsplit=2)[2].strip()
+        t_name = match_dict_key(BLACK_MARKET, t_q)
+        if t_name:
+            cost = BLACK_MARKET[t_name]["price"]
+            if u_data["cash"] < cost:
+                bot.reply_to(m, f"▽ : ❌ السوق السوداء تتعامل بالكاش بس! تبي <b>{cost} د.ل</b> كاش في جيبك.")
+                return True
+            if t_name == "جواز مزور":
+                update_user_field(user.id, cash=u_data["cash"] - cost, wanted=0)
+                bot.reply_to(m, "▽ : 🕶️ شريت جواز مزور وانمسح اسمك من قائمة المطلوبين للشرطة طول!")
+                return True
+            u_tools = json.loads(u_data.get("tools") or "{}")
+            u_tools[t_name] = u_tools.get(t_name, 0) + 1
+            update_user_field(user.id, cash=u_data["cash"] - cost, tools=json.dumps(u_tools))
+            bot.reply_to(m, f"▽ : 🕶️ شريت (<b>{t_name}</b>) من السوق السوداء! بتستخدمها تلقائياً في عملية السطو الجاية.")
+        return True
+
+    def _use_best_tool(u_dict: dict) -> tuple[int, str]:
+        u_tools = json.loads(u_dict.get("tools") or "{}")
+        best_p = 0
+        best_n = "بدون معدات"
+        for tn, ti in BLACK_MARKET.items():
+            if u_tools.get(tn, 0) > 0 and ti["power"] > best_p:
+                best_p = ti["power"]
+                best_n = tn
+        if best_n != "بدون معدات":
+            u_tools[best_n] -= 1
+            update_user_field(u_dict["user_id"], tools=json.dumps(u_tools))
+        return best_p, best_n
+
+    if ntext in ("سرقه", "سرقه جيبه") and m.reply_to_message:
+        vic = ensure_user(m.reply_to_message.from_user)
+        if vic["user_id"] == user.id or m.reply_to_message.from_user.is_bot:
+            return True
+        if vic["firewall_until"] > now:
+            bot.reply_to(m, f"▽ : 🛡️ المواطن <b>{esc(vic['name'])}</b> مفعل حماية المبرمج! ما تقدرش تسرقه.")
+            return True
+        if vic["cash"] < 100:
+            bot.reply_to(m, f"▽ : 😂 جيب <b>{esc(vic['name'])}</b> فاضي يصفر ({vic['cash']} د.ل)! جرب <code>سرقه بيته</code> أو <code>سرقه متجره</code>.")
+            return True
+        tool_power, _ = _use_best_tool(u_data)
+        chance = min(80, 48 + tool_power)
+        if random.randint(1, 100) <= chance:
+            stolen = max(50, int(vic["cash"] * random.uniform(0.25, 0.45)))
+            update_user_field(vic["user_id"], cash=vic["cash"] - stolen)
+            update_user_field(user.id, cash=u_data["cash"] + stolen, steal_success=u_data["steal_success"] + 1, wanted=1)
+            bot.reply_to(
+                m,
+                f"🦹‍♂️💨 <b>عملية نشل جيب ناجحة!</b>\n"
+                f"▽ : خطف <b>{esc(u_data['name'])}</b> مبلغ <b>{stolen} د.ل</b> كاش من جيب <b>{esc(vic['name'])}</b> وهرب!"
+            )
+        else:
+            update_user_field(user.id, jail_until=now + 180)
+            bot.reply_to(m, f"🚨🤛 فطنلك <b>{esc(vic['name'])}</b> وعطاك طريحة وسلمك للدورية! انحبست <b>3 دقائق</b>.")
+        return True
+
+    if ntext in ("سرقه بيته", "سرقه منزله", "سرقه حوشه") and m.reply_to_message:
+        vic = ensure_user(m.reply_to_message.from_user)
+        if vic["user_id"] == user.id:
+            return True
+        if vic["home_cash"] < 200:
+            bot.reply_to(m, f"▽ : 🏠 خزنة حوش <b>{esc(vic['name'])}</b> فاضية ما فيها شي!")
+            return True
+        house_def = HOUSES.get(vic["house"], {"defense": 10})["defense"] + vic["house_sec_level"]
+        tool_power, tool_name = _use_best_tool(u_data)
+        chance = max(15, min(75, 55 + tool_power - (house_def // 2)))
+        if random.randint(1, 100) <= chance:
+            stolen = int(vic["home_cash"] * random.uniform(0.30, 0.55))
+            update_user_field(vic["user_id"], home_cash=vic["home_cash"] - stolen)
+            update_user_field(user.id, cash=u_data["cash"] + stolen, steal_success=u_data["steal_success"] + 1, wanted=1)
+            bot.reply_to(
+                m,
+                f"🦹‍♂️🏠 <b>اقتحام حوش ناجح باستخدام ({tool_name})!</b>\n"
+                f"▽ : نقز <b>{esc(u_data['name'])}</b> لحوش <b>{esc(vic['name'])}</b> ({vic['house']})\n"
+                f"▽ : وسرق من خزنة الحوش <b>{stolen} د.ل</b> كاش!"
+            )
+        else:
+            update_user_field(user.id, jail_until=now + 240)
+            bot.reply_to(
+                m,
+                f"🚨🔔 <b>ضرب جهاز الإنذار في حوش {esc(vic['name'])} (حماية {house_def}%)!</b>\n"
+                f"▽ : فشلت السرقة وانحبست لمدة <b>4 دقائق</b>!"
+            )
+        return True
+
+    if ntext in ("سرقه متجره", "سرقه صيدليته", "سرقه مشروعه") and m.reply_to_message:
+        vic = ensure_user(m.reply_to_message.from_user)
+        vic_biz = get_user_businesses(vic["user_id"])
+        if not vic_biz:
+            bot.reply_to(m, f"▽ : ❌ المواطن <b>{esc(vic['name'])}</b> ما عنداش متجر أو صيدلية باش تسرقها!")
+            return True
+        st = vic_biz[0]
+        if st["vault"] < 100 and st["stock"] < 3:
+            bot.reply_to(m, f"▽ : مشروع « <b>{esc(st['custom_name'])}</b> » خزينته ومخزنه فاضيين!")
+            return True
+        tool_power, tool_name = _use_best_tool(u_data)
+        status_bonus = 15 if st["is_open"] == 0 else -10
+        chance = max(15, min(75, 50 + tool_power + status_bonus - (st["security"] // 2)))
+        if random.randint(1, 100) <= chance:
+            stolen_cash = int(st["vault"] * 0.45)
+            stolen_stock = int(st["stock"] * 0.35)
+            cat = BUSINESS_CATALOG.get(st["biz_type"], {"unit_cost": 50})
+            stock_value = stolen_stock * cat["unit_cost"]
+            total_gain = stolen_cash + stock_value
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "UPDATE businesses SET vault = vault - ?, stock = stock - ? WHERE id = ?",
+                    (stolen_cash, stolen_stock, st["id"])
+                )
+                conn.commit()
+                conn.close()
+            update_user_field(user.id, cash=u_data["cash"] + total_gain, steal_success=u_data["steal_success"] + 1, wanted=1)
+            bot.reply_to(
+                m,
+                f"💣🏪 <b>سطو مسلح على « {esc(st['custom_name'])} »!</b>\n"
+                f"------------------\n"
+                f"▽ : المنفذ ← <b>{esc(u_data['name'])}</b> (المعدات: {tool_name})\n"
+                f"▽ : حالة المشروع وقت السطو ← <b>{'مسكّر 🌙' if st['is_open'] == 0 else 'مفتوح ☀️'}</b>\n"
+                f"▽ : الكاش المسروق من الخزينة ← <b>{stolen_cash} د.ل</b>\n"
+                f"▽ : البضائع المسروقة ← <b>{stolen_stock} وحدة</b> (انباعت بـ {stock_value} د.ل)!"
+            )
+        else:
+            update_user_field(user.id, jail_until=now + 300)
+            bot.reply_to(
+                m,
+                f"🚓🚨 <b>شدوك الحراس والكاميرات متاع « {esc(st['custom_name'])} »!</b>\n"
+                f"▽ : تم القبض عليك وحبسك لمدة <b>5 دقائق</b>!"
+            )
+        return True
+
+    if ntext in ("سرقه المصرف", "سرقه البنك") or ntext.startswith(("سرقه مصرف ", "سرقه بنك ")):
+        if now - u_data["last_rob"] < 600:
+            bot.reply_to(m, "▽ : ⏳ الدوريات محاصرة المصارف توا! استنى شوية دقائق.")
+            return True
+        b_q = text.split(maxsplit=2)[2].strip() if len(text.split()) >= 3 else "مصرف الصحارى"
+        b_target = match_dict_key(OFFICIAL_BANKS, b_q) or b_q
+        sec = OFFICIAL_BANKS.get(b_target, {"security": 75})["security"]
+        tool_power, tool_name = _use_best_tool(u_data)
+        chance = max(12, min(65, 35 + tool_power - (sec // 3)))
+        if random.randint(1, 100) <= chance:
+            loot = random.randint(12000, 30000)
+            update_user_field(user.id, cash=u_data["cash"] + loot, last_rob=now, wanted=1, steal_success=u_data["steal_success"] + 1)
+            bot.reply_to(
+                m,
+                f"💣🏦 <b>سطو مسلح أسطوري على ({esc(b_target)})!</b>\n"
+                f"▽ : استخدمت (<b>{tool_name}</b>) لتجاوز حماية المصرف ({sec}%)\n"
+                f"▽ : وهربت بغنيمة كاش قدرها <b>{loot} د.ل</b>! 🔥"
+            )
+        else:
+            update_user_field(user.id, jail_until=now + 360, last_rob=now)
+            bot.reply_to(
+                m,
+                f"🚓🚨 <b>فشل السطو على ({esc(b_target)}) بسبب قوة حمايته ({sec}%)!</b>\n"
+                f"▽ : انحبست لمدة <b>6 دقائق</b>."
+            )
+        return True
+
+    # ─────────────── 7. السوق الحر، البورصة، والزواج الواقعي المطور (قبول البنت + تحديد المهر + الطلاق والخلع بنصف المال + نداء الزوجين) ───────────────
+    if ntext == "السوق الحر":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT * FROM marketplace").fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : 🏪 السوق الحر فاضي حالياً!\n▽ : اعرض سيارتك أو عقارك بكتابة:\n<code>عرض سياره للبيع 40000</code>\n<code>عرض عقار للبيع 60000</code>")
+        else:
+            txt = "▽ : عروض السوق الحر بين اللاعبين :\n------------------\n"
+            for r in rows:
+                txt += f"🆔 <b>#{r['id']}</b> | البائع: {esc(r['seller_name'])}\n  └ السلعة: <b>{esc(r['item_name'])}</b> ~ السعر: <b>{r['price']} د.ل</b>\n"
+            txt += "------------------\n▽ : للشراء: <code>شراء معروض الرقم</code> | للإلغاء: <code>الغاء عرض الرقم</code>"
+            bot.reply_to(m, txt)
+        return True
+
+    if ntext.startswith(("عرض بيت للبيع ", "عرض عقار للبيع ")):
+        pr = ntext.split()[-1]
+        if u_data["house"] == "بدون سكن":
+            bot.reply_to(m, "▽ : ❌ ما عندكش عقار باش تعرضه للبيع!")
+            return True
+        if pr.isdigit() and int(pr) > 0:
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO marketplace (seller_id, seller_name, item_type, item_name, price) VALUES (?,?,?,?,?)",
+                    (user.id, u_data["name"], "house", u_data["house"], int(pr))
+                )
+                conn.commit()
+                conn.close()
+            old_h = u_data["house"]
+            update_user_field(user.id, house="بدون سكن")
+            bot.reply_to(m, f"▽ : 🏪 تم عرض عقارك (<b>{old_h}</b>) في السوق الحر بسعر <b>{pr} د.ل</b>!")
+        return True
+
+    if ntext.startswith("عرض سياره للبيع "):
+        pr = ntext.split()[-1]
+        if u_data["car"] == "بدون سيارة":
+            bot.reply_to(m, "▽ : ❌ ما عندكش سيارة باش تعرضها للبيع!")
+            return True
+        if pr.isdigit() and int(pr) > 0:
+            with db_lock:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO marketplace (seller_id, seller_name, item_type, item_name, price) VALUES (?,?,?,?,?)",
+                    (user.id, u_data["name"], "car", u_data["car"], int(pr))
+                )
+                conn.commit()
+                conn.close()
+            old_c = u_data["car"]
+            update_user_field(user.id, car="بدون سيارة")
+            bot.reply_to(m, f"▽ : 🏪 تم عرض سيارتك (<b>{old_c}</b>) في السوق الحر بسعر <b>{pr} د.ل</b>!")
+        return True
+
+    if ntext.startswith("الغاء عرض "):
+        parts = ntext.split()
+        if len(parts) == 3 and parts[2].isdigit():
+            m_id = int(parts[2])
+            with db_lock:
+                conn = get_db()
+                row = conn.execute("SELECT * FROM marketplace WHERE id = ?", (m_id,)).fetchone()
+                if not row or row["seller_id"] != user.id:
+                    conn.close()
+                    bot.reply_to(m, "▽ : ❌ العرض هدا مش موجود أو مش متاعك!")
+                    return True
+                conn.execute("DELETE FROM marketplace WHERE id = ?", (m_id,))
+                conn.commit()
+                conn.close()
+            if row["item_type"] == "house":
+                update_user_field(user.id, house=row["item_name"])
+            else:
+                update_user_field(user.id, car=row["item_name"])
+            bot.reply_to(m, f"▽ : ✅ تم إلغاء العرض واسترجاع (<b>{row['item_name']}</b>)!")
+        return True
+
+    if ntext.startswith("شراء معروض "):
+        parts = ntext.split()
+        if len(parts) == 3 and parts[2].isdigit():
+            m_id = int(parts[2])
+            with db_lock:
+                conn = get_db()
+                row = conn.execute("SELECT * FROM marketplace WHERE id = ?", (m_id,)).fetchone()
+                if not row:
+                    conn.close()
+                    bot.reply_to(m, "▽ : ❌ المعروض مش موجود!")
+                    return True
+                price = row["price"]
+                if u_data["bank_balance"] >= price:
+                    pay_from = "bank"
+                elif u_data["cash"] >= price:
+                    pay_from = "cash"
+                else:
+                    conn.close()
+                    bot.reply_to(m, f"▽ : ❌ ما عندكش {price} د.ل باش تشري هدا المعروض!")
+                    return True
+                conn.execute("DELETE FROM marketplace WHERE id = ?", (m_id,))
+                conn.commit()
+                conn.close()
+
+            if pay_from == "bank":
+                update_user_field(
+                    user.id,
+                    bank_balance=u_data["bank_balance"] - price,
+                    house=(row["item_name"] if row["item_type"] == "house" else u_data["house"]),
+                    car=(row["item_name"] if row["item_type"] == "car" else u_data["car"])
+                )
+            else:
+                update_user_field(
+                    user.id,
+                    cash=u_data["cash"] - price,
+                    house=(row["item_name"] if row["item_type"] == "house" else u_data["house"]),
+                    car=(row["item_name"] if row["item_type"] == "car" else u_data["car"])
+                )
+            seller = get_user_by_id(row["seller_id"])
+            if seller:
+                update_user_field(seller["user_id"], bank_balance=seller["bank_balance"] + price)
+            bot.reply_to(m, f"▽ : 🎉 شريت (<b>{esc(row['item_name'])}</b>) من <b>{esc(row['seller_name'])}</b> بمبلغ <b>{price} د.ل</b>!")
+        return True
+
+    if ntext in ("البورصه", "الاسهم", "اسهمي"):
+        txt = "▽ : 📈 سوق الأسهم والشركات المساهمة الليبية :\n------------------\n"
+        for sn in STOCKS.keys():
+            txt += f"▽ : سهم <b>{sn}</b> ~ السعر اللحظي: <b>{get_current_stock_price(sn)} د.ل</b>\n"
+        txt += "------------------\n▽ : للشراء: <code>شراء اسهم المدار 10</code> | للبيع: <code>بيع اسهم المدار</code>"
+        bot.reply_to(m, txt, reply_markup=build_bank_secret_kb(user.id))
+        return True
+
+    if ntext.startswith("شراء اسهم "):
+        parts = text.split()
+        if len(parts) == 4 and parts[3].isdigit():
+            sn = match_dict_key(STOCKS, parts[2])
+            qty = int(parts[3])
+            if not sn or qty <= 0:
+                return True
+            cost = get_current_stock_price(sn) * qty
+            if u_data["bank_balance"] < cost:
+                bot.reply_to(m, f"▽ : ❌ تبي {cost} د.ل في مصرفك باش تشري هدي الأسهم!")
+                return True
+            u_stk = json.loads(u_data.get("stocks") or "{}")
+            u_stk[sn] = u_stk.get(sn, 0) + qty
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] - cost, stocks=json.dumps(u_stk))
+            bot.reply_to(m, f"▽ : 📈 شريت <b>{qty} سهم</b> في شركة <b>{sn}</b> بمبلغ <b>{cost} د.ل</b>!")
+        return True
+
+    if ntext.startswith("بيع اسهم "):
+        sn_q = text.split(maxsplit=2)[2].strip()
+        sn = match_dict_key(STOCKS, sn_q)
+        u_stk = json.loads(u_data.get("stocks") or "{}")
+        qty = u_stk.get(sn, 0) if sn else 0
+        if qty > 0:
+            val = get_current_stock_price(sn) * qty
+            u_stk[sn] = 0
+            update_user_field(user.id, bank_balance=u_data["bank_balance"] + val, stocks=json.dumps(u_stk))
+            bot.reply_to(m, f"▽ : 💰 بعت أسهمك في شركة <b>{sn}</b> وانحطت <b>{val} د.ل</b> في رصيدك المصرفي السري!")
+        return True
+
+    # 💍 نداء الزوجة والزوج (زوجتي / مرتي & زوجي / راجلي)
+    if ntext in ("زوجتي", "يا زوجتي", "مرتي", "يا مرتي", "المدام"):
+        if u_data["married_to"] == 0:
+            bot.reply_to(m, random.choice(SINGLE_ROAST_REPLIES))
+            return True
+        sp = get_user_by_id(u_data["married_to"])
+        if not sp:
+            bot.reply_to(m, random.choice(SINGLE_ROAST_REPLIES))
+            return True
+        mention_str = f"<a href='tg://user?id={sp['user_id']}'>{esc(sp['name'])}</a>"
+        bot.reply_to(m, random.choice(CALL_WIFE_REPLIES).format(mention=mention_str))
+        return True
+
+    if ntext in ("زوجي", "يا زوجي", "راجلي", "يا راجلي"):
+        if u_data["married_to"] == 0:
+            bot.reply_to(m, random.choice(SINGLE_ROAST_REPLIES))
+            return True
+        sp = get_user_by_id(u_data["married_to"])
+        if not sp:
+            bot.reply_to(m, random.choice(SINGLE_ROAST_REPLIES))
+            return True
+        mention_str = f"<a href='tg://user?id={sp['user_id']}'>{esc(sp['name'])}</a>"
+        bot.reply_to(m, random.choice(CALL_HUSBAND_REPLIES).format(mention=mention_str))
+        return True
+
+    if ntext in ("زوجني", "ثنائي اليوم"):
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT user_id, name FROM users WHERE user_id != ? ORDER BY RANDOM() LIMIT 2", (user.id,)).fetchall()
+            conn.close()
+        if not rows:
+            bot.reply_to(m, "▽ : ما فيش أعضاء كافيين حالياً في السجل!")
+            return True
+        if ntext == "زوجني":
+            p = rows[0]
+            bot.reply_to(
+                m,
+                f"💍🎉 <b>قسمة ونصيب بالجو الليبي!</b>\n"
+                f"▽ : العريس/العروسة ← <b>{esc(u_data['name'])}</b>\n"
+                f"▽ : شريك العمر المقترح ← <a href='tg://user?id={p['user_id']}'>{esc(p['name'])}</a> ❤️\n"
+                f"▽ : (للزواج الرسمي بالقبول والمهر رد على رسالته واكتب <code>زواج</code>)"
+            )
+        else:
+            p1 = u_data if len(rows) == 1 else rows[0]
+            p2 = rows[-1]
+            bot.reply_to(
+                m,
+                f"👩‍❤️‍👨✨ <b>أحلى ثنائي اليوم في القروب :</b>\n"
+                f"▽ : <a href='tg://user?id={p1['user_id']}'>{esc(p1['name'])}</a> ❤️ <a href='tg://user?id={p2['user_id']}'>{esc(p2['name'])}</a>"
+            )
+        return True
+
+    # 💍 نظام الزواج الواقعي (خطبة -> البنت تقبل أو ترفض -> البنت تحدد المهر -> الرجل يوافق أو يرفض)
+    if (ntext == "زواج" or ntext.startswith("زواج ") or ntext == "خطبه") and m.reply_to_message:
+        bride = ensure_user(m.reply_to_message.from_user)
+        if bride["user_id"] == user.id or m.reply_to_message.from_user.is_bot:
+            bot.reply_to(m, "▽ : 😂 ما تقدرش تخطب روحك أو تخطب بوت يا فالح!")
+            return True
+        if u_data["married_to"] != 0:
+            bot.reply_to(m, "▽ : ❌ أنت متزوج أصلاً يا غالي! تبي المدام تخلعك وتاخذ نص فلوسك؟ 😂")
+            return True
+        if bride["married_to"] != 0:
+            bot.reply_to(m, f"▽ : ❌ <b>{esc(bride['name'])}</b> متزوجة على ذمة راجل ثاني، احشم على وجهك! 😂")
+            return True
+
+        m_key = f"{chat_id}_{bride['user_id']}"
+        pending_marriage[m_key] = {
+            "groom_id": user.id,
+            "groom_name": u_data["name"],
+            "bride_id": bride["user_id"],
+            "bride_name": bride["name"],
+            "step": "wait_bride",
+            "dowry": 0,
+            "expires": now + 300
+        }
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("💍 موافقة ونحدد المهر", callback_data=f"mar_b_yes:{chat_id}:{bride['user_id']}"),
+            types.InlineKeyboardButton("💔 رفض الخطبة", callback_data=f"mar_b_no:{chat_id}:{bride['user_id']}")
+        )
+        bot.reply_to(
+            m,
+            f"💍💐 <b>طلب خطبة وزواج رسمي في القروب!</b>\n"
+            f"------------------\n"
+            f"▽ : العريس المتقدم ← <b>{esc(u_data['name'])}</b>\n"
+            f"▽ : العروسة المطلوبة ← <a href='tg://user?id={bride['user_id']}'>{esc(bride['name'])}</a>\n"
+            f"------------------\n"
+            f"▽ : القرار عندك يا عروسة: تقبلي الخطبة وتحددي مهرك وشرطك، ولا ترفضيه؟ 👇",
+            reply_markup=kb
+        )
+        return True
+
+    # ⚖️ نظام الطلاق والخلع الواقعي (تقاسم 50% من إجمالي الثروة!)
+    if ntext == "طلاق":
+        if u_data["married_to"] == 0:
+            bot.reply_to(m, "▽ : 😂 أنت أعزب أصلاً بتطلق منو؟")
+            return True
+        if u_data.get("marriage_role") == "wife":
+            bot.reply_to(m, "▽ : ⚖️ يا مدام الطلاق في يد الراجل، أنتِ تقدري تكتبي كلمة <code>خلع</code> وتخلعيه (بس بتدفعي ليه نص فلوسك تعويض!).")
+            return True
+        sp_id = u_data["married_to"]
+        sp = get_user_by_id(sp_id)
+        half_cash = u_data["cash"] // 2
+        half_home = u_data["home_cash"] // 2
+        half_bank = u_data["bank_balance"] // 2
+        total_comp = half_cash + half_home + half_bank
+
+        update_user_field(
+            user.id,
+            cash=u_data["cash"] - half_cash,
+            home_cash=u_data["home_cash"] - half_home,
+            bank_balance=u_data["bank_balance"] - half_bank,
+            married_to=0,
+            marriage_role="",
+            dowry=0
+        )
+        if sp:
+            update_user_field(
+                sp_id,
+                bank_balance=sp["bank_balance"] + total_comp,
+                married_to=0,
+                marriage_role="",
+                dowry=0
+            )
+        sp_name = sp["name"] if sp else "الزوجة"
+        bot.reply_to(
+            m,
+            f"⚖️💔 <b>حكم محكمة الأسرة الليبية — طلاق رسمي!</b>\n"
+            f"------------------\n"
+            f"▽ : طلّق <b>{esc(u_data['name'])}</b> زوجته <b>{esc(sp_name)}</b>!\n"
+            f"▽ : وبموجب القانون الواقعي، تم خصم <b>نصف ثروة الزوج بالكامل ({total_comp} د.ل)</b> وتحويلها لحساب الزوجة كنفقة ومؤخر طلاق! 💸😂"
+        )
+        return True
+
+    if ntext == "خلع":
+        if u_data["married_to"] == 0:
+            bot.reply_to(m, "▽ : 😂 أنتِ عزباء أصلاً بتخلعي منو؟")
+            return True
+        if u_data.get("marriage_role") == "husband":
+            bot.reply_to(m, "▽ : ⚖️ يا غالي الخلع للبنت، أنت راجل اكتب <code>طلاق</code> لو تبي تطلق (بس بتدفع ليها نص ثروتك!).")
+            return True
+        sp_id = u_data["married_to"]
+        sp = get_user_by_id(sp_id)
+        half_cash = u_data["cash"] // 2
+        half_home = u_data["home_cash"] // 2
+        half_bank = u_data["bank_balance"] // 2
+        total_comp = half_cash + half_home + half_bank
+
+        update_user_field(
+            user.id,
+            cash=u_data["cash"] - half_cash,
+            home_cash=u_data["home_cash"] - half_home,
+            bank_balance=u_data["bank_balance"] - half_bank,
+            married_to=0,
+            marriage_role="",
+            dowry=0
+        )
+        if sp:
+            update_user_field(
+                sp_id,
+                bank_balance=sp["bank_balance"] + total_comp,
+                married_to=0,
+                marriage_role="",
+                dowry=0
+            )
+        sp_name = sp["name"] if sp else "الزوج"
+        bot.reply_to(
+            m,
+            f"⚖️💔 <b>حكم محكمة الأسرة الليبية — خلع رسمي!</b>\n"
+            f"------------------\n"
+            f"▽ : خلعت <b>{esc(u_data['name'])}</b> زوجها <b>{esc(sp_name)}</b>!\n"
+            f"▽ : وبموجب قانون الخلع الواقعي، دفعت الزوجة <b>نصف ثروتها بالكامل ({total_comp} د.ل)</b> تعويضاً للزوج! 💸😂"
+        )
+        return True
+
+    if ntext == "زواجي":
+        if u_data["married_to"] == 0:
+            bot.reply_to(m, "▽ : الحالة الاجتماعية ← أعزب/عزباء ويدور على الحلال 💔😂")
+        else:
+            sp = get_user_by_id(u_data["married_to"])
+            sp_name = sp["name"] if sp else "شريك الحياة"
+            role_ar = "الزوج 🤵‍♂️" if u_data.get("marriage_role") == "husband" else "الزوجة 👰‍♀️"
+            bot.reply_to(
+                m,
+                f"▽ : 💍 <b>وثيقة الزواج الرسمية :</b>\n"
+                f"------------------\n"
+                f"▽ : صفتك ← <b>{role_ar}</b>\n"
+                f"▽ : شريك حياتك ← <b>{esc(sp_name)}</b>\n"
+                f"▽ : المهر المسجل ← <b>{u_data['dowry']} د.ل</b>\n"
+                f"▽ : لمناداته اكتب: <code>زوجتي</code> أو <code>زوجي</code> ❤️"
+            )
+        return True
+
+    for f_title in FUN_TITLES:
+        nf = norm_ar(f_title)
+        if (ntext == f"رفع {nf}" or ntext == f"تنزيل {nf}") and m.reply_to_message:
+            t_name = m.reply_to_message.from_user.first_name
+            if ntext.startswith("رفع"):
+                bot.reply_to(m, f"▽ : 😂 تم رفع <b>{esc(t_name)}</b> إلى لقب (<b>{f_title} القروب</b>) رسمياً!")
+            else:
+                bot.reply_to(m, f"▽ : 😂 تم تنزيل <b>{esc(t_name)}</b> من لقب (<b>{f_title} القروب</b>)!")
+            return True
+
+    if ntext.startswith("نسبه ") and m.reply_to_message:
+        kind = text.split(maxsplit=1)[1].strip()
+        t_name = m.reply_to_message.from_user.first_name
+        bot.reply_to(m, f"▽ : نسبة <b>{esc(kind)}</b> لـ <b>{esc(t_name)}</b> هي ← <b>{random.randint(1, 100)}%</b> 🔥")
+        return True
+
+    if ntext in ("شن رايك فيه", "شن رايك في هذا", "شنو رايك بهذا") and m.reply_to_message:
+        bot.reply_to(m, f"▽ : رأيي فيه بصراحة ← {random.choice(OPINIONS_LIST)}")
+        return True
+
+    if ntext in ("هزبه", "قصف جبهه", "رزله") and m.reply_to_message:
+        bot.reply_to(m, f"▽ : {random.choice(ROASTS_LIST)}")
+        return True
+
+    if ntext in ("هاك هديه", "اعطي هديه", "انطي هديه", "هديه", "اهداء") and m.reply_to_message:
+        t_name = m.reply_to_message.from_user.first_name
+        bot.reply_to(m, f"▽ : قدّم <b>{esc(u_data['name'])}</b> هدية سمحة إلى <b>{esc(t_name)}</b> ← {random.choice(GIFTS_LIST)}")
+        return True
+
+    if ntext in QUESTIONS_BANK:
+        q, ans = random.choice(QUESTIONS_BANK[ntext])
+        reward = 400
+        active_games[chat_id] = {"answer": ans, "reward": reward}
+        bot.reply_to(m, f"🎲 مسابقة ({text}) :\n▽ : {q}\n▽ : الجائزة ← <b>{reward} د.ل</b> لأول إجابة صح!")
+        return True
+
+    if ntext == "رياضيات":
+        a, b = random.randint(12, 65), random.randint(12, 65)
+        active_games[chat_id] = {"answer": str(a + b), "reward": 400}
+        bot.reply_to(m, f"🧮 مسابقة الرياضيات :\n▽ : كم ناتج ( <b>{a} + {b}</b> ) ؟\n▽ : الجائزة ← <b>400 د.ل</b>!")
+        return True
+
+    if ntext in ("حجره", "ورقه", "مقص"):
+        bot_c = random.choice(["حجره", "ورقه", "مقص"])
+        if ntext == bot_c:
+            bot.reply_to(m, f"▽ : أنا اخترت ({bot_c}) وأنت ({ntext}) ← تعادل يا غالي! 🤝")
+        elif (ntext == "حجره" and bot_c == "مقص") or (ntext == "ورقه" and bot_c == "حجره") or (ntext == "مقص" and bot_c == "ورقه"):
+            update_user_field(user.id, cash=u_data["cash"] + 200)
+            bot.reply_to(m, f"▽ : أنا اخترت ({bot_c}) وأنت ({ntext}) ← غلبتني وربحت <b>200 د.ل</b> كاش! 🎉")
+        else:
+            bot.reply_to(m, f"▽ : أنا اخترت ({bot_c}) وأنت ({ntext}) ← غلبتك يا فالح! 😎")
+        return True
+
+    if ntext in ("غنيلي", "اغنيه"):
+        bot.reply_to(m, random.choice(SONGS_LIST))
+        return True
+    if ntext in ("شعر", "قصيده"):
+        bot.reply_to(m, random.choice(POEMS_LIST))
+        return True
+    if ntext == "نكته":
+        bot.reply_to(m, random.choice(JOKES_LIST))
+        return True
+    if ntext == "اذكار":
+        bot.reply_to(m, random.choice(ADHKAR_LIST))
+        return True
+    if ntext == "اقتباس":
+        bot.reply_to(m, random.choice(QUOTES_LIST))
+        return True
+    if ntext == "لو خيروك":
+        bot.reply_to(m, random.choice(LAW_KHAYAROUK_LIST))
+        return True
+    if ntext == "صراحه":
+        bot.reply_to(m, random.choice(SARAHA_QUESTIONS))
+        return True
+
+    if ntext.startswith("تحدي ") and m.reply_to_message:
+        parts = ntext.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            bet = int(parts[1])
+            opp = ensure_user(m.reply_to_message.from_user)
+            if opp["user_id"] == user.id or bet < 100:
+                return True
+            if u_data["cash"] < bet or opp["cash"] < bet:
+                bot.reply_to(m, "▽ : ❌ لازم الطرفين يكون عندهم مبلغ الرهان كاش في الجيب!")
+                return True
+            duel_id = f"{chat_id}_{now}_{random.randint(10,99)}"
+            active_duels[duel_id] = {
+                "chat_id": chat_id,
+                "p1": user.id, "p1_name": u_data["name"],
+                "p2": opp["user_id"], "p2_name": opp["name"],
+                "bet": bet
+            }
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            kb.add(
+                types.InlineKeyboardButton("⚔️ قدها ونقبل التحدي", callback_data=f"duel_acc_{duel_id}"),
+                types.InlineKeyboardButton("🏳️ انسحاب", callback_data=f"duel_rej_{duel_id}")
+            )
+            bot.reply_to(
+                m,
+                f"⚔️🔥 <b>تحدي رجالة مباشر!</b>\n▽ : {esc(u_data['name'])} يتحدى {esc(opp['name'])} على مبلغ <b>{bet} د.ل</b>!",
+                reply_markup=kb
+            )
+        return True
+
+    if ntext.startswith(("حظ ", "مضاربه ", "استثمار ")):
+        parts = ntext.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            amt = int(parts[1])
+            if 0 < amt <= u_data["cash"]:
+                if random.choice([True, False]):
+                    prof = int(amt * 0.8)
+                    update_user_field(user.id, cash=u_data["cash"] + prof)
+                    bot.reply_to(m, f"▽ : 📈 صفقة رابحة يا ذيب! ربحت <b>{prof} د.ل</b> كاش إضافي 🎉")
+                else:
+                    update_user_field(user.id, cash=u_data["cash"] - amt)
+                    bot.reply_to(m, f"▽ : 📉 للأسف خسرت المضاربة (<b>{amt} د.ل</b>)، معوضة خير 😢")
+        return True
+
+    if ntext.startswith("اكشط "):
+        code = text.split(maxsplit=1)[1].strip().upper()
+        with db_lock:
+            conn = get_db()
+            row = conn.execute("SELECT * FROM scratch_cards WHERE code = ?", (code,)).fetchone()
+            if not row or row["claimed_by"] != 0:
+                conn.close()
+                bot.reply_to(m, "▽ : ❌ كرت اكشطها غلط أو مستخدم من قبل!")
+                return True
+            amt = row["amount"]
+            conn.execute("UPDATE scratch_cards SET claimed_by = ? WHERE code = ?", (user.id, code))
+            conn.commit()
+            conn.close()
+        update_user_field(user.id, cash=u_data["cash"] + amt)
+        bot.reply_to(m, f"▽ : 🎉 مبروك يا غالي! كشطت الكرت (<code>{esc(code)}</code>) وربحت <b>{amt} د.ل</b> كاش!")
+        return True
+
+    if ntext in ("توب", "توب الفلوس", "توب الاغنياء"):
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT name, cash FROM users ORDER BY cash DESC LIMIT 10").fetchall()
+            conn.close()
+        txt = "▽ : 🏆 قائمة أصحاب الكاش الظاهر في ليبيا :\n------------------\n"
+        for i, r in enumerate(rows, 1):
+            txt += f"{i}. <b>{esc(r['name'])}</b> ~ {r['cash']} د.ل كاش 💵\n"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext == "توب الحراميه":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT name, steal_success FROM users ORDER BY steal_success DESC LIMIT 10").fetchall()
+            conn.close()
+        txt = "▽ : 🦹‍♂️ أخطر اللصوص في ليبيا :\n------------------\n"
+        for i, r in enumerate(rows, 1):
+            txt += f"{i}. <b>{esc(r['name'])}</b> ~ {r['steal_success']} عملية ناجحة\n"
+        bot.reply_to(m, txt)
+        return True
+
+    if ntext == "توب التفاعل":
+        with db_lock:
+            conn = get_db()
+            rows = conn.execute("SELECT name, points, level FROM users ORDER BY points DESC LIMIT 10").fetchall()
+            conn.close()
+        txt = "▽ : ⭐ أساطير التفاعل والهدرزة في البوت :\n------------------\n"
+        for i, r in enumerate(rows, 1):
+            txt += f"{i}. <b>{esc(r['name'])}</b> ~ المستوى {r['level']} ({r['points']} نقطة)\n"
+        bot.reply_to(m, txt)
+        return True
+
+    return False
+
+# ==================== نهاية القسم الرابع ====================
